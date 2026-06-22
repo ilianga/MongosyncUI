@@ -2,47 +2,68 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a local Next.js web app that generates mongosync configs, spawns/manages mongosync processes, and provides live monitoring with historical metric charts.
+**Goal:** Build a local Next.js web app that generates mongosync configs, spawns/manages mongosync processes, and provides full migration lifecycle control plus live monitoring with historical metric charts.
 
-**Architecture:** Next.js App Router full-stack app. API routes manage mongosync child processes and proxy commands to their HTTP APIs. SQLite stores migration definitions and metric snapshots. Client polls API every 5s for live updates.
+**Architecture:** Next.js App Router full-stack app. API routes manage mongosync child processes, generate YAML configs, and proxy commands to each process's HTTP API (`/api/v1/*`). SQLite stores migration definitions, settings, and metric snapshots. A server-side poller calls `GET /progress` every 5s on active migrations and writes metric rows. The client polls our own API every 5s for live UI updates.
 
 **Tech Stack:** Next.js 14+ (App Router), TypeScript, Tailwind CSS, shadcn/ui, recharts, react-hook-form, zod, better-sqlite3, nanoid, js-yaml
 
 ## Global Constraints
 
-- TypeScript strict mode throughout
-- All runtime data stored in `~/.mongosync-ui/` (db, configs, logs)
-- No authentication, no WebSockets, no daemon
-- shadcn/ui for all UI components — no custom design system
-- Mongosync HTTP API base: `http://localhost:{port}/api/v1/`
-- Ports auto-assigned starting from 27182
+- TypeScript strict mode throughout.
+- All runtime data stored in `~/.mongosync-ui/` (`data.db`, `configs/`, `logs/<id>/`); override dir via `MONGOSYNC_UI_DIR` env (used by tests).
+- No authentication, no WebSockets, no daemon. Polling runs only while the Next.js server runs.
+- shadcn/ui for all UI components — no custom design system.
+- One mongosync process per migration, each on its own port auto-assigned starting at 27182.
+- Mongosync HTTP API base: `http://localhost:{port}/api/v1/`.
+- **Mongosync API is the source of truth.** Field names and values must match the official docs exactly:
+  - `/start` body fields: `source`, `destination`, `buildIndexes`, `reversible`, `detectRandomId`, `copyInNaturalOrder`, `preExistingDestinationData`, `includeNamespaces`, `excludeNamespaces`, `sharding`, `verification`.
+  - `buildIndexes` values: `afterDataCopy` | `beforeDataCopy` | `excludeHashed` | `excludeHashedAfterCopy` | `never`.
+  - Namespace filter entry: `database` **or** `databaseRegex {pattern, options}`; optional `collections` (string array) and/or `collectionsRegex {pattern, options}`.
+  - There is **no** `enableUserWriteBlocking` start field — write blocking happens automatically at commit. Do not invent it.
+  - `/progress` direction keys are capitalized: `directionMapping.Source`, `directionMapping.Destination`.
+  - CLI flags live in the generated config file (never on the command line, to avoid leaking passwords): `cluster0`, `cluster1`, `port`, `logPath`, `verbosity`, `loadLevel`, `metricsLoggingFilepath`, `createIndexesBatchSize`, `id`, `disableTelemetry`, `disableMetricsLogging`, `disableVerification`, `enableCappedCollectionHandling`, `acceptDisclaimer`.
+- mongosync states: `IDLE`, `RUNNING`, `PAUSED`, `COMMITTING`, `COMMITTED`, `REVERSING` (plus transient `INITIALIZING` before IDLE).
 
 ---
 
-### Task 1: Project Scaffolding + SQLite Database Layer
+## File Structure
+
+| File | Responsibility |
+|------|----------------|
+| `src/lib/types.ts` | All shared TypeScript types and the `MONGOSYNC_STATES` tuple. |
+| `src/lib/paths.ts` | Resolve data dir, config dir, per-migration log dir. Single source of path truth. |
+| `src/lib/db.ts` | SQLite singleton + CRUD for migrations, metrics, settings. |
+| `src/lib/config-generator.ts` | Build the YAML process config and the `/start` request body from a migration's stored config. |
+| `src/lib/process-manager.ts` | Spawn/kill mongosync, send API commands, fetch progress, liveness check. |
+| `src/lib/cluster-check.ts` | Test connectivity + read MongoDB version of a cluster URI (via `mongosh`/driver-free ping). |
+| `src/lib/poller.ts` | Global interval that polls active migrations and records metrics. |
+| `src/lib/init.ts` | One-time startup: reconcile dead PIDs, auto-detect binary, start poller. |
+| `src/lib/schemas.ts` | zod schemas — source of truth for the form and the `/start` config shape. |
+| `src/app/api/**` | REST endpoints (migrations CRUD + actions, metrics, settings, mongosync version, cluster check, logs). |
+| `src/components/*` | UI: state badge, action buttons, cards, form, charts, progress panels, logs panel, pre-commit checklist. |
+| `src/app/**/page.tsx` | Dashboard, new-migration, detail, settings pages. |
+
+Tasks are ordered so each produces an independently testable deliverable. Library tasks (1–4) are unit-tested with vitest; UI tasks (5–9) are verified by build + smoke render.
+
+---
+
+### Task 1: Scaffolding + Paths + SQLite Database Layer
 
 **Files:**
-- Create: `package.json`, `tsconfig.json`, `tailwind.config.ts`, `next.config.ts`, `postcss.config.mjs`
-- Create: `src/lib/db.ts`
+- Create: `package.json`, `tsconfig.json`, `tailwind.config.ts`, `next.config.ts`, `postcss.config.mjs`, `vitest.config.ts` (via tooling)
 - Create: `src/lib/types.ts`
-- Create: `src/app/layout.tsx` (minimal shell)
-- Create: `src/app/page.tsx` (placeholder)
+- Create: `src/lib/paths.ts`
+- Create: `src/lib/db.ts`
+- Create: `src/app/layout.tsx`, `src/app/page.tsx` (placeholder)
 - Test: `src/lib/__tests__/db.test.ts`
 
 **Interfaces:**
 - Consumes: nothing (first task)
 - Produces:
-  - `getDb(): BetterSqlite3.Database` — returns singleton DB connection
-  - `createMigration(data: CreateMigrationInput): Migration`
-  - `getMigration(id: string): Migration | undefined`
-  - `getAllMigrations(): Migration[]`
-  - `updateMigration(id: string, data: Partial<Migration>): void`
-  - `deleteMigration(id: string): void`
-  - `insertMetric(data: MetricInput): void`
-  - `getMetrics(migrationId: string, since?: number): Metric[]`
-  - `getSetting(key: string): string | undefined`
-  - `setSetting(key: string, value: string): void`
-  - Types: `Migration`, `Metric`, `MongosyncState`, `CreateMigrationInput`, `MetricInput`
+  - `paths.ts`: `getDataDir(): string`, `getConfigDir(): string`, `getLogDir(id: string): string`
+  - `db.ts`: `getDb()`, `createMigration(input: CreateMigrationInput): Migration`, `getMigration(id): Migration | undefined`, `getAllMigrations(): Migration[]`, `updateMigration(id, data: Partial<Migration>): void`, `deleteMigration(id): void`, `insertMetric(input: MetricInput): void`, `getMetrics(migrationId, since?): Metric[]`, `getSetting(key): string | undefined`, `setSetting(key, value): void`
+  - `types.ts`: `MongosyncState`, `Migration`, `CreateMigrationInput`, `Metric`, `MetricInput`, `StartConfig`, `NamespaceFilter`, `ShardingEntry`
 
 - [ ] **Step 1: Initialize Next.js project**
 
@@ -51,7 +72,7 @@ cd /Users/ilian/Dev/MongosyncUI
 npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --no-turbopack
 ```
 
-Accept overwriting existing files if prompted. This scaffolds `package.json`, `tsconfig.json`, `next.config.ts`, `tailwind.config.ts`, `postcss.config.mjs`, and the `src/app/` skeleton.
+Accept overwriting existing files if prompted (keep `CLAUDE.md`, `docs/`, `.gitignore`). This scaffolds `package.json`, `tsconfig.json`, `next.config.ts`, `tailwind.config.ts`, `postcss.config.mjs`, and `src/app/`.
 
 - [ ] **Step 2: Install dependencies**
 
@@ -60,7 +81,7 @@ npm install better-sqlite3 nanoid js-yaml recharts react-hook-form @hookform/res
 npm install -D @types/better-sqlite3 @types/js-yaml vitest
 ```
 
-- [ ] **Step 3: Add vitest config**
+- [ ] **Step 3: Add vitest config and scripts**
 
 Create `vitest.config.ts`:
 
@@ -69,19 +90,12 @@ import { defineConfig } from "vitest/config";
 import path from "path";
 
 export default defineConfig({
-  test: {
-    globals: true,
-    environment: "node",
-  },
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
+  test: { globals: true, environment: "node" },
+  resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
 });
 ```
 
-Add to `package.json` scripts: `"test": "vitest run"`, `"test:watch": "vitest"`.
+Add to `package.json` `scripts`: `"test": "vitest run"`, `"test:watch": "vitest"`.
 
 - [ ] **Step 4: Define shared types**
 
@@ -99,12 +113,60 @@ export const MONGOSYNC_STATES = [
 
 export type MongosyncState = (typeof MONGOSYNC_STATES)[number];
 
+export type BuildIndexesMode =
+  | "afterDataCopy"
+  | "beforeDataCopy"
+  | "excludeHashed"
+  | "excludeHashedAfterCopy"
+  | "never";
+
+export type Verbosity = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL" | "PANIC";
+
+// One include/exclude namespace filter entry.
+export interface NamespaceFilter {
+  database?: string;
+  databaseRegex?: { pattern: string; options?: string };
+  collections?: string[];
+  collectionsRegex?: { pattern: string; options?: string };
+}
+
+export interface ShardingEntry {
+  database: string;
+  collection: string;
+  shardCollection: { key: Record<string, 1 | "hashed">[] };
+}
+
+// Everything the user configures for a sync, persisted as JSON in Migration.config.
+// Split into "process" options (go to the YAML config) and "start" options (go to /start body).
+export interface StartConfig {
+  // /start body
+  buildIndexes?: BuildIndexesMode;
+  reversible?: boolean;
+  detectRandomId?: boolean;
+  preExistingDestinationData?: boolean;
+  includeNamespaces?: NamespaceFilter[];
+  excludeNamespaces?: NamespaceFilter[];
+  verificationEnabled?: boolean;
+  sharding?: {
+    createSupportingIndexes?: boolean;
+    shardingEntries: ShardingEntry[];
+  };
+  // process / CLI options (YAML config)
+  loadLevel?: number; // 1-4
+  verbosity?: Verbosity;
+  createIndexesBatchSize?: number; // 1-64
+  id?: string; // shard id for multi-instance sharded sync
+  disableTelemetry?: boolean;
+  disableVerification?: boolean;
+  enableCappedCollectionHandling?: boolean;
+}
+
 export interface Migration {
   id: string;
   name: string;
   sourceUri: string;
   destUri: string;
-  config: string; // JSON string of start options
+  config: string; // JSON of StartConfig
   state: MongosyncState;
   port: number;
   pid: number | null;
@@ -116,45 +178,69 @@ export interface CreateMigrationInput {
   name: string;
   sourceUri: string;
   destUri: string;
-  config: Record<string, unknown>;
+  config: StartConfig;
   port: number;
 }
 
+// One polled snapshot. Wide enough to drive every chart and stat in the detail page.
 export interface Metric {
   id: number;
   migrationId: string;
   state: string;
-  progress: number;
-  lagTimeSeconds: number | null;
-  totalEventsApplied: number;
+  copyProgress: number; // 0-100, derived from collectionCopy bytes
   estimatedCopiedBytes: number;
   estimatedTotalBytes: number;
+  lagTimeSeconds: number | null;
+  totalEventsApplied: number;
+  estimatedSecondsToCEACatchup: number | null;
+  indexesBuilt: number;
+  totalIndexesToBuild: number;
+  sourcePingMs: number | null;
+  destPingMs: number | null;
   timestamp: number;
 }
 
-export interface MetricInput {
-  migrationId: string;
-  state: string;
-  progress: number;
-  lagTimeSeconds: number | null;
-  totalEventsApplied: number;
-  estimatedCopiedBytes: number;
-  estimatedTotalBytes: number;
+export type MetricInput = Omit<Metric, "id" | "timestamp">;
+```
+
+- [ ] **Step 5: Implement the paths module**
+
+Create `src/lib/paths.ts`:
+
+```ts
+import path from "path";
+import os from "os";
+import fs from "fs";
+
+export function getDataDir(): string {
+  const dir = process.env.MONGOSYNC_UI_DIR || path.join(os.homedir(), ".mongosync-ui");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function getConfigDir(): string {
+  const dir = path.join(getDataDir(), "configs");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function getLogDir(migrationId: string): string {
+  const dir = path.join(getDataDir(), "logs", migrationId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 ```
 
-- [ ] **Step 5: Write failing tests for db module**
+- [ ] **Step 6: Write failing tests for db module**
 
 Create `src/lib/__tests__/db.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import Database from "better-sqlite3";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import path from "path";
 import fs from "fs";
 import os from "os";
 
-// We'll test against a temp directory
 let testDir: string;
 let originalEnv: string | undefined;
 
@@ -162,7 +248,6 @@ beforeEach(() => {
   testDir = fs.mkdtempSync(path.join(os.tmpdir(), "mongosync-ui-test-"));
   originalEnv = process.env.MONGOSYNC_UI_DIR;
   process.env.MONGOSYNC_UI_DIR = testDir;
-  // Reset module cache so getDb() picks up the new dir
   vi.resetModules();
 });
 
@@ -178,107 +263,63 @@ async function loadDb() {
 describe("db", () => {
   it("creates tables on first access", async () => {
     const { getDb } = await loadDb();
-    const db = getDb();
-    const tables = db
+    const names = (getDb()
       .prepare("SELECT name FROM sqlite_master WHERE type='table'")
-      .all() as { name: string }[];
-    const names = tables.map((t) => t.name);
+      .all() as { name: string }[]).map((t) => t.name);
     expect(names).toContain("migrations");
     expect(names).toContain("metrics");
     expect(names).toContain("settings");
   });
 
-  it("creates and retrieves a migration", async () => {
-    const { createMigration, getMigration } = await loadDb();
+  it("creates, retrieves, and lists migrations", async () => {
+    const { createMigration, getMigration, getAllMigrations } = await loadDb();
     const m = createMigration({
-      name: "test-migration",
+      name: "test",
       sourceUri: "mongodb://src:27017",
       destUri: "mongodb://dst:27017",
       config: { reversible: true },
       port: 27182,
     });
     expect(m.id).toBeTruthy();
-    expect(m.name).toBe("test-migration");
     expect(m.state).toBe("IDLE");
     expect(m.pid).toBeNull();
-
-    const fetched = getMigration(m.id);
-    expect(fetched).toEqual(m);
+    expect(getMigration(m.id)).toEqual(m);
+    expect(getAllMigrations()).toHaveLength(1);
   });
 
-  it("lists all migrations", async () => {
-    const { createMigration, getAllMigrations } = await loadDb();
-    createMigration({
-      name: "m1",
-      sourceUri: "mongodb://a",
-      destUri: "mongodb://b",
-      config: {},
-      port: 27182,
-    });
-    createMigration({
-      name: "m2",
-      sourceUri: "mongodb://c",
-      destUri: "mongodb://d",
-      config: {},
-      port: 27183,
-    });
-    const all = getAllMigrations();
-    expect(all).toHaveLength(2);
-  });
-
-  it("updates a migration", async () => {
-    const { createMigration, updateMigration, getMigration } = await loadDb();
+  it("updates and deletes a migration", async () => {
+    const { createMigration, updateMigration, getMigration, deleteMigration } = await loadDb();
     const m = createMigration({
-      name: "m",
-      sourceUri: "mongodb://a",
-      destUri: "mongodb://b",
-      config: {},
-      port: 27182,
+      name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182,
     });
     updateMigration(m.id, { state: "RUNNING", pid: 12345 });
     const updated = getMigration(m.id)!;
     expect(updated.state).toBe("RUNNING");
     expect(updated.pid).toBe(12345);
-  });
-
-  it("deletes a migration", async () => {
-    const { createMigration, deleteMigration, getMigration } = await loadDb();
-    const m = createMigration({
-      name: "m",
-      sourceUri: "mongodb://a",
-      destUri: "mongodb://b",
-      config: {},
-      port: 27182,
-    });
     deleteMigration(m.id);
     expect(getMigration(m.id)).toBeUndefined();
   });
 
-  it("inserts and retrieves metrics", async () => {
-    const { createMigration, insertMetric, getMetrics } = await loadDb();
+  it("inserts and retrieves metrics, cascading on delete", async () => {
+    const { createMigration, insertMetric, getMetrics, deleteMigration } = await loadDb();
     const m = createMigration({
-      name: "m",
-      sourceUri: "mongodb://a",
-      destUri: "mongodb://b",
-      config: {},
-      port: 27182,
+      name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182,
     });
     insertMetric({
-      migrationId: m.id,
-      state: "RUNNING",
-      progress: 42.5,
-      lagTimeSeconds: 3,
-      totalEventsApplied: 1000,
-      estimatedCopiedBytes: 5000,
-      estimatedTotalBytes: 10000,
+      migrationId: m.id, state: "RUNNING", copyProgress: 42.5,
+      estimatedCopiedBytes: 5000, estimatedTotalBytes: 10000,
+      lagTimeSeconds: 3, totalEventsApplied: 1000, estimatedSecondsToCEACatchup: 12,
+      indexesBuilt: 1, totalIndexesToBuild: 4, sourcePingMs: 12, destPingMs: 20,
     });
     const metrics = getMetrics(m.id);
     expect(metrics).toHaveLength(1);
-    expect(metrics[0].progress).toBe(42.5);
-    expect(metrics[0].lagTimeSeconds).toBe(3);
+    expect(metrics[0].copyProgress).toBe(42.5);
+    expect(metrics[0].indexesBuilt).toBe(1);
+    deleteMigration(m.id);
+    expect(getMetrics(m.id)).toHaveLength(0);
   });
 
-  it("gets and sets settings", async () => {
+  it("gets and sets settings (upsert)", async () => {
     const { getSetting, setSetting } = await loadDb();
     expect(getSetting("mongosyncPath")).toBeUndefined();
     setSetting("mongosyncPath", "/usr/local/bin/mongosync");
@@ -289,41 +330,32 @@ describe("db", () => {
 });
 ```
 
-- [ ] **Step 6: Run tests to verify they fail**
+- [ ] **Step 7: Run tests to verify they fail**
 
 ```bash
 npx vitest run src/lib/__tests__/db.test.ts
 ```
 
-Expected: FAIL — `@/lib/db` module does not exist.
+Expected: FAIL — `@/lib/db` does not exist.
 
-- [ ] **Step 7: Implement db module**
+- [ ] **Step 8: Implement db module**
 
 Create `src/lib/db.ts`:
 
 ```ts
 import Database from "better-sqlite3";
 import path from "path";
-import fs from "fs";
-import os from "os";
 import { nanoid } from "nanoid";
+import { getDataDir } from "./paths";
 import type { Migration, CreateMigrationInput, Metric, MetricInput } from "./types";
-
-function getDataDir(): string {
-  const dir = process.env.MONGOSYNC_UI_DIR || path.join(os.homedir(), ".mongosync-ui");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.mkdirSync(path.join(dir, "configs"), { recursive: true });
-  fs.mkdirSync(path.join(dir, "logs"), { recursive: true });
-  return dir;
-}
 
 let db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (db) return db;
-  const dbPath = path.join(getDataDir(), "data.db");
-  db = new Database(dbPath);
+  db = new Database(path.join(getDataDir(), "data.db"));
   db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
   db.exec(`
     CREATE TABLE IF NOT EXISTS migrations (
       id TEXT PRIMARY KEY,
@@ -341,27 +373,28 @@ export function getDb(): Database.Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       migrationId TEXT NOT NULL REFERENCES migrations(id) ON DELETE CASCADE,
       state TEXT NOT NULL,
-      progress REAL NOT NULL DEFAULT 0,
-      lagTimeSeconds REAL,
-      totalEventsApplied INTEGER NOT NULL DEFAULT 0,
+      copyProgress REAL NOT NULL DEFAULT 0,
       estimatedCopiedBytes INTEGER NOT NULL DEFAULT 0,
       estimatedTotalBytes INTEGER NOT NULL DEFAULT 0,
+      lagTimeSeconds REAL,
+      totalEventsApplied INTEGER NOT NULL DEFAULT 0,
+      estimatedSecondsToCEACatchup REAL,
+      indexesBuilt INTEGER NOT NULL DEFAULT 0,
+      totalIndexesToBuild INTEGER NOT NULL DEFAULT 0,
+      sourcePingMs REAL,
+      destPingMs REAL,
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_metrics_migration ON metrics(migrationId, timestamp);
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
+    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
   return db;
 }
 
 export function createMigration(input: CreateMigrationInput): Migration {
   const now = Date.now();
-  const id = nanoid();
   const migration: Migration = {
-    id,
+    id: nanoid(),
     name: input.name,
     sourceUri: input.sourceUri,
     destUri: input.destUri,
@@ -390,11 +423,9 @@ export function getAllMigrations(): Migration[] {
 }
 
 export function updateMigration(id: string, data: Partial<Migration>): void {
-  const fields = Object.keys(data)
-    .filter((k) => k !== "id")
-    .map((k) => `${k} = @${k}`)
-    .join(", ");
-  if (!fields) return;
+  const keys = Object.keys(data).filter((k) => k !== "id");
+  if (keys.length === 0) return;
+  const fields = keys.map((k) => `${k} = @${k}`).join(", ");
   getDb()
     .prepare(`UPDATE migrations SET ${fields}, updatedAt = @updatedAt WHERE id = @id`)
     .run({ ...data, id, updatedAt: Date.now() });
@@ -407,14 +438,18 @@ export function deleteMigration(id: string): void {
 export function insertMetric(input: MetricInput): void {
   getDb()
     .prepare(
-      `INSERT INTO metrics (migrationId, state, progress, lagTimeSeconds, totalEventsApplied, estimatedCopiedBytes, estimatedTotalBytes, timestamp)
-       VALUES (@migrationId, @state, @progress, @lagTimeSeconds, @totalEventsApplied, @estimatedCopiedBytes, @estimatedTotalBytes, @timestamp)`
+      `INSERT INTO metrics (migrationId, state, copyProgress, estimatedCopiedBytes, estimatedTotalBytes,
+         lagTimeSeconds, totalEventsApplied, estimatedSecondsToCEACatchup, indexesBuilt, totalIndexesToBuild,
+         sourcePingMs, destPingMs, timestamp)
+       VALUES (@migrationId, @state, @copyProgress, @estimatedCopiedBytes, @estimatedTotalBytes,
+         @lagTimeSeconds, @totalEventsApplied, @estimatedSecondsToCEACatchup, @indexesBuilt, @totalIndexesToBuild,
+         @sourcePingMs, @destPingMs, @timestamp)`
     )
     .run({ ...input, timestamp: Date.now() });
 }
 
 export function getMetrics(migrationId: string, since?: number): Metric[] {
-  if (since) {
+  if (since !== undefined) {
     return getDb()
       .prepare("SELECT * FROM metrics WHERE migrationId = ? AND timestamp >= ? ORDER BY timestamp ASC")
       .all(migrationId, since) as Metric[];
@@ -426,41 +461,35 @@ export function getMetrics(migrationId: string, since?: number): Metric[] {
 
 export function getSetting(key: string): string | undefined {
   const row = getDb().prepare("SELECT value FROM settings WHERE key = ?").get(key) as
-    | { value: string }
-    | undefined;
+    | { value: string } | undefined;
   return row?.value;
 }
 
 export function setSetting(key: string, value: string): void {
   getDb()
-    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
     .run(key, value);
 }
 ```
 
-- [ ] **Step 8: Run tests to verify they pass**
+- [ ] **Step 9: Run tests to verify they pass**
 
 ```bash
 npx vitest run src/lib/__tests__/db.test.ts
 ```
 
-Expected: all 7 tests PASS.
+Expected: all 5 tests PASS.
 
-- [ ] **Step 9: Install shadcn/ui**
+- [ ] **Step 10: Install shadcn/ui + components**
 
 ```bash
 npx shadcn@latest init -d
+npx shadcn@latest add button card input label select slider badge table dialog tabs collapsible toast switch textarea separator tooltip progress alert checkbox
 ```
 
-This sets up `src/components/ui/`, `lib/utils.ts`, and updates `tailwind.config.ts` with shadcn's preset.
-
-Then add the components we'll use throughout the app:
-
-```bash
-npx shadcn@latest add button card input label select slider badge table dialog tabs collapsible toast switch textarea separator tooltip progress
-```
-
-- [ ] **Step 10: Create minimal layout shell**
+- [ ] **Step 11: Create layout shell + placeholder dashboard**
 
 Replace `src/app/layout.tsx`:
 
@@ -484,16 +513,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="min-h-screen bg-background">
           <header className="border-b">
             <div className="container mx-auto flex h-14 items-center px-4">
-              <a href="/" className="text-lg font-semibold">
-                MongosyncUI
-              </a>
+              <a href="/" className="text-lg font-semibold">MongosyncUI</a>
               <nav className="ml-auto flex gap-4">
-                <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
-                  Dashboard
-                </a>
-                <a href="/settings" className="text-sm text-muted-foreground hover:text-foreground">
-                  Settings
-                </a>
+                <a href="/" className="text-sm text-muted-foreground hover:text-foreground">Dashboard</a>
+                <a href="/settings" className="text-sm text-muted-foreground hover:text-foreground">Settings</a>
               </nav>
             </div>
           </header>
@@ -506,7 +529,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 ```
 
-Replace `src/app/page.tsx` with a placeholder:
+Replace `src/app/page.tsx`:
 
 ```tsx
 export default function DashboardPage() {
@@ -519,56 +542,49 @@ export default function DashboardPage() {
 }
 ```
 
-- [ ] **Step 11: Verify the app runs**
+- [ ] **Step 12: Verify app boots**
 
 ```bash
 npm run dev &
 sleep 3
-curl -s http://localhost:3000 | head -20
+curl -s http://localhost:3000 | grep -o "MongosyncUI" | head -1
 kill %1
 ```
 
-Expected: HTML response with "MongosyncUI" in it.
+Expected: prints `MongosyncUI`.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: project scaffolding with SQLite database layer and shadcn/ui setup"
+git commit -m "feat: scaffolding, paths, SQLite layer, and shadcn/ui setup"
 ```
 
 ---
 
-### Task 2: Config Generator + Process Manager
+### Task 2: Config Generator (full CLI + /start options)
 
 **Files:**
 - Create: `src/lib/config-generator.ts`
-- Create: `src/lib/process-manager.ts`
 - Test: `src/lib/__tests__/config-generator.test.ts`
-- Test: `src/lib/__tests__/process-manager.test.ts`
 
 **Interfaces:**
-- Consumes: `getDb()`, `Migration`, `updateMigration()`, `getSetting()` from Task 1
+- Consumes: `Migration`, `StartConfig` (Task 1); `getConfigDir()`, `getLogDir()` (Task 1)
 - Produces:
-  - `generateConfig(migration: Migration): string` — returns path to written YAML config file
-  - `buildStartBody(migration: Migration): Record<string, unknown>` — builds the /start request body from migration config
-  - `spawnMongosync(migration: Migration): number` — spawns process, returns PID
-  - `killMongosync(migration: Migration): void` — kills process by PID
-  - `sendCommand(port: number, endpoint: string, body?: Record<string, unknown>): Promise<unknown>` — sends HTTP request to mongosync API
-  - `fetchProgress(port: number): Promise<ProgressResponse>` — calls GET /api/v1/progress
-  - `isProcessAlive(pid: number): boolean` — checks if PID is still running
-  - `ProgressResponse` type
+  - `generateConfig(migration: Migration): string` — writes `<configDir>/<id>.yaml`, returns its path. Contains `cluster0`, `cluster1`, `port`, `logPath`, plus any process options present in config.
+  - `buildStartBody(migration: Migration): Record<string, unknown>` — builds the `/start` body with `source`/`destination` plus only the start-time options present in config, using correct field names/values.
 
-- [ ] **Step 1: Write failing tests for config-generator**
+- [ ] **Step 1: Write failing tests**
 
 Create `src/lib/__tests__/config-generator.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import yaml from "js-yaml";
+import type { Migration, StartConfig } from "@/lib/types";
 
 let testDir: string;
 let originalEnv: string | undefined;
@@ -585,55 +601,136 @@ afterEach(() => {
   fs.rmSync(testDir, { recursive: true, force: true });
 });
 
-async function loadModule() {
+async function load() {
   return await import("@/lib/config-generator");
 }
 
-describe("config-generator", () => {
-  const baseMigration = {
-    id: "test123",
+function migrationWith(config: StartConfig): Migration {
+  return {
+    id: "abc123",
     name: "test",
     sourceUri: "mongodb://src:27017",
     destUri: "mongodb://dst:27017",
-    config: JSON.stringify({ reversible: true, enableUserWriteBlocking: true, loadLevel: 4 }),
-    state: "IDLE" as const,
+    config: JSON.stringify(config),
+    state: "IDLE",
     port: 27183,
     pid: null,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: 1,
+    updatedAt: 1,
   };
+}
 
-  it("generates a valid YAML config file", async () => {
-    const { generateConfig } = await loadModule();
-    const configPath = generateConfig(baseMigration);
-    expect(fs.existsSync(configPath)).toBe(true);
-    const content = yaml.load(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-    expect(content.cluster0).toBe("mongodb://src:27017");
-    expect(content.cluster1).toBe("mongodb://dst:27017");
-    expect(content.port).toBe(27183);
+describe("generateConfig", () => {
+  it("writes a YAML config with connection, port, and logPath", async () => {
+    const { generateConfig } = await load();
+    const p = generateConfig(migrationWith({ loadLevel: 4, verbosity: "DEBUG" }));
+    expect(fs.existsSync(p)).toBe(true);
+    const cfg = yaml.load(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+    expect(cfg.cluster0).toBe("mongodb://src:27017");
+    expect(cfg.cluster1).toBe("mongodb://dst:27017");
+    expect(cfg.port).toBe(27183);
+    expect(cfg.logPath).toContain("abc123");
+    expect(cfg.loadLevel).toBe(4);
+    expect(cfg.verbosity).toBe("DEBUG");
   });
 
-  it("builds a start body with correct source/destination", async () => {
-    const { buildStartBody } = await loadModule();
-    const body = buildStartBody(baseMigration);
+  it("omits process options that are not set", async () => {
+    const { generateConfig } = await load();
+    const p = generateConfig(migrationWith({}));
+    const cfg = yaml.load(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+    expect(cfg).not.toHaveProperty("loadLevel");
+    expect(cfg).not.toHaveProperty("createIndexesBatchSize");
+    expect(cfg).not.toHaveProperty("id");
+  });
+
+  it("includes optional process flags when set", async () => {
+    const { generateConfig } = await load();
+    const p = generateConfig(
+      migrationWith({
+        createIndexesBatchSize: 16,
+        id: "shard0",
+        disableTelemetry: true,
+        disableVerification: true,
+        enableCappedCollectionHandling: true,
+      })
+    );
+    const cfg = yaml.load(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+    expect(cfg.createIndexesBatchSize).toBe(16);
+    expect(cfg.id).toBe("shard0");
+    expect(cfg.disableTelemetry).toBe(true);
+    expect(cfg.disableVerification).toBe(true);
+    expect(cfg.enableCappedCollectionHandling).toBe(true);
+  });
+});
+
+describe("buildStartBody", () => {
+  it("always sets source and destination", async () => {
+    const { buildStartBody } = await load();
+    const body = buildStartBody(migrationWith({}));
     expect(body.source).toBe("cluster0");
     expect(body.destination).toBe("cluster1");
-    expect(body.reversible).toBe(true);
-    expect(body.enableUserWriteBlocking).toBe(true);
   });
 
-  it("includes namespace filters in start body when present", async () => {
-    const { buildStartBody } = await loadModule();
-    const migration = {
-      ...baseMigration,
-      config: JSON.stringify({
-        includeNamespaces: [{ database: "mydb", collection: "mycoll" }],
-        excludeNamespaces: [{ database: "admin" }],
-      }),
-    };
-    const body = buildStartBody(migration);
-    expect(body.includeNamespaces).toEqual([{ database: "mydb", collection: "mycoll" }]);
-    expect(body.excludeNamespaces).toEqual([{ database: "admin" }]);
+  it("passes through start-time options with correct names", async () => {
+    const { buildStartBody } = await load();
+    const body = buildStartBody(
+      migrationWith({
+        reversible: true,
+        buildIndexes: "afterDataCopy",
+        detectRandomId: false,
+        preExistingDestinationData: true,
+        verificationEnabled: false,
+      })
+    );
+    expect(body.reversible).toBe(true);
+    expect(body.buildIndexes).toBe("afterDataCopy");
+    expect(body.detectRandomId).toBe(false);
+    expect(body.preExistingDestinationData).toBe(true);
+    expect(body.verification).toEqual({ enabled: false });
+  });
+
+  it("maps namespace filters verbatim (database/collections/regex)", async () => {
+    const { buildStartBody } = await load();
+    const body = buildStartBody(
+      migrationWith({
+        includeNamespaces: [
+          { database: "sales", collections: ["EMEA", "APAC"] },
+          { databaseRegex: { pattern: "^analytics_", options: "i" } },
+        ],
+        excludeNamespaces: [{ database: "sales", collections: ["accounts_old"] }],
+      })
+    );
+    expect(body.includeNamespaces).toEqual([
+      { database: "sales", collections: ["EMEA", "APAC"] },
+      { databaseRegex: { pattern: "^analytics_", options: "i" } },
+    ]);
+    expect(body.excludeNamespaces).toEqual([{ database: "sales", collections: ["accounts_old"] }]);
+  });
+
+  it("includes sharding config when present", async () => {
+    const { buildStartBody } = await load();
+    const body = buildStartBody(
+      migrationWith({
+        sharding: {
+          createSupportingIndexes: true,
+          shardingEntries: [
+            { database: "db", collection: "c", shardCollection: { key: [{ userId: 1 }] } },
+          ],
+        },
+      })
+    );
+    expect(body.sharding).toEqual({
+      createSupportingIndexes: true,
+      shardingEntries: [
+        { database: "db", collection: "c", shardCollection: { key: [{ userId: 1 }] } },
+      ],
+    });
+  });
+
+  it("never emits an enableUserWriteBlocking field", async () => {
+    const { buildStartBody } = await load();
+    const body = buildStartBody(migrationWith({ reversible: true }));
+    expect(body).not.toHaveProperty("enableUserWriteBlocking");
   });
 });
 ```
@@ -653,102 +750,122 @@ Create `src/lib/config-generator.ts`:
 ```ts
 import fs from "fs";
 import path from "path";
-import os from "os";
 import yaml from "js-yaml";
-import type { Migration } from "./types";
+import { getConfigDir, getLogDir } from "./paths";
+import type { Migration, StartConfig } from "./types";
 
-function getDataDir(): string {
-  return process.env.MONGOSYNC_UI_DIR || path.join(os.homedir(), ".mongosync-ui");
+function parseConfig(migration: Migration): StartConfig {
+  return JSON.parse(migration.config) as StartConfig;
 }
 
 export function generateConfig(migration: Migration): string {
-  const dataDir = getDataDir();
-  const configDir = path.join(dataDir, "configs");
-  const logDir = path.join(dataDir, "logs", migration.id);
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.mkdirSync(logDir, { recursive: true });
+  const cfg = parseConfig(migration);
+  const logDir = getLogDir(migration.id);
 
-  const parsedConfig = JSON.parse(migration.config);
-
-  const config: Record<string, unknown> = {
+  const out: Record<string, unknown> = {
     cluster0: migration.sourceUri,
     cluster1: migration.destUri,
-    logPath: logDir,
     port: migration.port,
-    verbosity: "INFO",
+    logPath: logDir,
+    metricsLoggingFilepath: logDir,
   };
 
-  if (parsedConfig.loadLevel !== undefined) {
-    config.loadLevel = parsedConfig.loadLevel;
-  }
+  // Process / CLI options — only emit when set.
+  if (cfg.verbosity !== undefined) out.verbosity = cfg.verbosity;
+  if (cfg.loadLevel !== undefined) out.loadLevel = cfg.loadLevel;
+  if (cfg.createIndexesBatchSize !== undefined) out.createIndexesBatchSize = cfg.createIndexesBatchSize;
+  if (cfg.id !== undefined) out.id = cfg.id;
+  if (cfg.disableTelemetry) out.disableTelemetry = true;
+  if (cfg.disableVerification) out.disableVerification = true;
+  if (cfg.enableCappedCollectionHandling) out.enableCappedCollectionHandling = true;
 
-  const configPath = path.join(configDir, `${migration.id}.yaml`);
-  fs.writeFileSync(configPath, yaml.dump(config), "utf-8");
+  const configPath = path.join(getConfigDir(), `${migration.id}.yaml`);
+  fs.writeFileSync(configPath, yaml.dump(out), "utf-8");
   return configPath;
 }
 
 export function buildStartBody(migration: Migration): Record<string, unknown> {
-  const parsedConfig = JSON.parse(migration.config);
-  const body: Record<string, unknown> = {
-    source: "cluster0",
-    destination: "cluster1",
-  };
+  const cfg = parseConfig(migration);
+  const body: Record<string, unknown> = { source: "cluster0", destination: "cluster1" };
 
-  const passthrough = [
-    "reversible",
-    "enableUserWriteBlocking",
-    "buildIndexes",
-    "includeNamespaces",
-    "excludeNamespaces",
-    "verification",
-    "hotDocuments",
-    "preExistingDestinationData",
-  ];
-
-  for (const key of passthrough) {
-    if (parsedConfig[key] !== undefined) {
-      body[key] = parsedConfig[key];
-    }
-  }
+  if (cfg.buildIndexes !== undefined) body.buildIndexes = cfg.buildIndexes;
+  if (cfg.reversible !== undefined) body.reversible = cfg.reversible;
+  if (cfg.detectRandomId !== undefined) body.detectRandomId = cfg.detectRandomId;
+  if (cfg.preExistingDestinationData !== undefined)
+    body.preExistingDestinationData = cfg.preExistingDestinationData;
+  if (cfg.includeNamespaces && cfg.includeNamespaces.length > 0)
+    body.includeNamespaces = cfg.includeNamespaces;
+  if (cfg.excludeNamespaces && cfg.excludeNamespaces.length > 0)
+    body.excludeNamespaces = cfg.excludeNamespaces;
+  if (cfg.sharding && cfg.sharding.shardingEntries.length > 0) body.sharding = cfg.sharding;
+  if (cfg.verificationEnabled !== undefined)
+    body.verification = { enabled: cfg.verificationEnabled };
 
   return body;
 }
 ```
 
-- [ ] **Step 4: Run config-generator tests**
+- [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
 npx vitest run src/lib/__tests__/config-generator.test.ts
 ```
 
-Expected: all 3 tests PASS.
+Expected: all tests PASS.
 
-- [ ] **Step 5: Write failing tests for process-manager**
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: config generator for mongosync YAML config and /start body"
+```
+
+---
+
+### Task 3: Process Manager + Cluster Connectivity/Version Check
+
+**Files:**
+- Create: `src/lib/process-manager.ts`
+- Create: `src/lib/cluster-check.ts`
+- Test: `src/lib/__tests__/process-manager.test.ts`
+- Test: `src/lib/__tests__/cluster-check.test.ts`
+
+**Interfaces:**
+- Consumes: `Migration` (Task 1); `getSetting`, `updateMigration` (Task 1); `generateConfig` (Task 2); `getLogDir` (Task 1)
+- Produces:
+  - `isProcessAlive(pid: number): boolean`
+  - `spawnMongosync(migration: Migration): number` — writes config, spawns detached process, stores PID, returns PID
+  - `killMongosync(migration: Migration): void`
+  - `sendCommand(port, endpoint, body?): Promise<unknown>` — POST to `/api/v1/<endpoint>`; throws on non-2xx or `success:false`
+  - `fetchProgress(port: number): Promise<ProgressResponse>` — GET `/api/v1/progress`
+  - `ProgressResponse` type (full shape used by poller + detail page)
+  - `cluster-check.ts`: `parseMongoUri(uri: string): { hosts: string[] }`, `checkCluster(uri: string): Promise<ClusterCheck>` where `ClusterCheck = { reachable: boolean; version?: string; error?: string }`
+
+- [ ] **Step 1: Define the ProgressResponse type and write process-manager tests**
 
 Create `src/lib/__tests__/process-manager.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
 
-async function loadModule() {
+async function load() {
   return await import("@/lib/process-manager");
 }
 
-describe("process-manager", () => {
-  it("isProcessAlive returns false for non-existent PID", async () => {
-    const { isProcessAlive } = await loadModule();
-    // PID 99999999 is extremely unlikely to exist
+describe("process-manager liveness", () => {
+  it("isProcessAlive returns false for a non-existent PID", async () => {
+    const { isProcessAlive } = await load();
     expect(isProcessAlive(99999999)).toBe(false);
   });
 
-  it("isProcessAlive returns true for current process", async () => {
-    const { isProcessAlive } = await loadModule();
+  it("isProcessAlive returns true for the current process", async () => {
+    const { isProcessAlive } = await load();
     expect(isProcessAlive(process.pid)).toBe(true);
   });
 });
 ```
 
-- [ ] **Step 6: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
 npx vitest run src/lib/__tests__/process-manager.test.ts
@@ -756,7 +873,7 @@ npx vitest run src/lib/__tests__/process-manager.test.ts
 
 Expected: FAIL — module does not exist.
 
-- [ ] **Step 7: Implement process-manager**
+- [ ] **Step 3: Implement process-manager**
 
 Create `src/lib/process-manager.ts`:
 
@@ -764,34 +881,53 @@ Create `src/lib/process-manager.ts`:
 import { spawn } from "node:child_process";
 import fs from "fs";
 import path from "path";
-import os from "os";
 import type { Migration } from "./types";
 import { generateConfig } from "./config-generator";
+import { getLogDir } from "./paths";
 import { getSetting, updateMigration } from "./db";
 
+// Mirrors GET /api/v1/progress. All numeric fields optional — mongosync omits
+// them depending on phase. The poller normalizes to the Metric shape.
 export interface ProgressResponse {
-  progress: {
+  success: boolean;
+  error?: string;
+  errorDescription?: string;
+  progress?: {
     state: string;
     canCommit: boolean;
     canWrite: boolean;
-    info: string;
-    lagTimeSeconds: number | null;
-    totalEventsApplied: number;
-    collectionCopy: {
-      estimatedCopiedBytes: number;
-      estimatedTotalBytes: number;
+    info?: string;
+    lagTimeSeconds?: number | null;
+    totalEventsApplied?: number;
+    estimatedSecondsToCEACatchup?: number;
+    estimatedOplogTimeRemaining?: string;
+    collectionCopy?: { estimatedCopiedBytes?: number; estimatedTotalBytes?: number };
+    indexBuilding?: {
+      indexesBuilt?: number;
+      totalIndexesToBuild?: number;
+      collectionsFinished?: number;
+      collectionsTotal?: number;
     };
-    directionMapping: {
-      source: string;
-      destination: string;
+    directionMapping?: { Source?: string; Destination?: string };
+    source?: { pingLatencyMs?: number };
+    destination?: { pingLatencyMs?: number };
+    mongosyncID?: string;
+    coordinatorID?: string;
+    warnings?: string[];
+    verification?: {
+      source?: VerificationSide;
+      destination?: VerificationSide;
     };
-    mongosyncID: string;
-    coordinatorID: string;
   };
 }
 
-function getDataDir(): string {
-  return process.env.MONGOSYNC_UI_DIR || path.join(os.homedir(), ".mongosync-ui");
+export interface VerificationSide {
+  phase?: string;
+  estimatedDocumentCount?: number;
+  hashedDocumentCount?: number;
+  scannedCollectionCount?: number;
+  totalCollectionCount?: number;
+  lagTimeSeconds?: number;
 }
 
 function getMongosyncPath(): string {
@@ -809,11 +945,8 @@ export function isProcessAlive(pid: number): boolean {
 
 export function spawnMongosync(migration: Migration): number {
   const configPath = generateConfig(migration);
-  const mongosyncPath = getMongosyncPath();
-  const logDir = path.join(getDataDir(), "logs", migration.id);
-  fs.mkdirSync(logDir, { recursive: true });
-
-  const child = spawn(mongosyncPath, ["--config", configPath], {
+  const logDir = getLogDir(migration.id);
+  const child = spawn(getMongosyncPath(), ["--config", configPath], {
     detached: true,
     stdio: [
       "ignore",
@@ -821,7 +954,6 @@ export function spawnMongosync(migration: Migration): number {
       fs.openSync(path.join(logDir, "stderr.log"), "a"),
     ],
   });
-
   child.unref();
   const pid = child.pid!;
   updateMigration(migration.id, { pid });
@@ -833,7 +965,7 @@ export function killMongosync(migration: Migration): void {
     try {
       process.kill(migration.pid, "SIGTERM");
     } catch {
-      // Process may have already exited
+      // already gone
     }
   }
   updateMigration(migration.id, { pid: null });
@@ -844,31 +976,30 @@ export async function sendCommand(
   endpoint: string,
   body: Record<string, unknown> = {}
 ): Promise<unknown> {
-  const url = `http://localhost:${port}/api/v1/${endpoint}`;
-  const res = await fetch(url, {
+  const res = await fetch(`http://localhost:${port}/api/v1/${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`mongosync ${endpoint} failed (${res.status}): ${text}`);
+  const json = (await res.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string;
+    errorDescription?: string;
+  };
+  if (!res.ok || json.success === false) {
+    throw new Error(json.errorDescription || json.error || `mongosync ${endpoint} failed (${res.status})`);
   }
-  return res.json();
+  return json;
 }
 
 export async function fetchProgress(port: number): Promise<ProgressResponse> {
-  const url = `http://localhost:${port}/api/v1/progress`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`mongosync progress failed (${res.status}): ${text}`);
-  }
-  return res.json() as Promise<ProgressResponse>;
+  const res = await fetch(`http://localhost:${port}/api/v1/progress`);
+  if (!res.ok) throw new Error(`mongosync progress failed (${res.status})`);
+  return (await res.json()) as ProgressResponse;
 }
 ```
 
-- [ ] **Step 8: Run process-manager tests**
+- [ ] **Step 4: Run process-manager tests**
 
 ```bash
 npx vitest run src/lib/__tests__/process-manager.test.ts
@@ -876,16 +1007,144 @@ npx vitest run src/lib/__tests__/process-manager.test.ts
 
 Expected: both tests PASS.
 
+- [ ] **Step 5: Write failing tests for cluster-check**
+
+Create `src/lib/__tests__/cluster-check.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+
+async function load() {
+  return await import("@/lib/cluster-check");
+}
+
+describe("parseMongoUri", () => {
+  it("extracts a single host:port", async () => {
+    const { parseMongoUri } = await load();
+    expect(parseMongoUri("mongodb://user:pass@host1:27017/db").hosts).toEqual(["host1:27017"]);
+  });
+
+  it("extracts multiple hosts from a replica set URI", async () => {
+    const { parseMongoUri } = await load();
+    expect(parseMongoUri("mongodb://h1:27017,h2:27018,h3:27019/?replicaSet=rs0").hosts).toEqual([
+      "h1:27017",
+      "h2:27018",
+      "h3:27019",
+    ]);
+  });
+
+  it("defaults port 27017 when omitted", async () => {
+    const { parseMongoUri } = await load();
+    expect(parseMongoUri("mongodb://localhost/test").hosts).toEqual(["localhost:27017"]);
+  });
+
+  it("handles mongodb+srv by returning the srv host", async () => {
+    const { parseMongoUri } = await load();
+    expect(parseMongoUri("mongodb+srv://user:pass@cluster.mongodb.net/db").hosts).toEqual([
+      "cluster.mongodb.net:27017",
+    ]);
+  });
+});
+```
+
+- [ ] **Step 6: Run tests to verify they fail**
+
+```bash
+npx vitest run src/lib/__tests__/cluster-check.test.ts
+```
+
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 7: Implement cluster-check**
+
+mongosync needs no MongoDB driver, so we avoid adding one. `checkCluster` does a raw TCP connect to the first host (reachability) and, when the `mongosh` binary is available, reads the server version. Connectivity alone is enough to block a clearly-broken URI in the form.
+
+Create `src/lib/cluster-check.ts`:
+
+```ts
+import net from "node:net";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+export interface ClusterCheck {
+  reachable: boolean;
+  version?: string;
+  error?: string;
+}
+
+export function parseMongoUri(uri: string): { hosts: string[] } {
+  const withoutScheme = uri.replace(/^mongodb(\+srv)?:\/\//, "");
+  const afterAuth = withoutScheme.includes("@")
+    ? withoutScheme.slice(withoutScheme.indexOf("@") + 1)
+    : withoutScheme;
+  const hostPart = afterAuth.split("/")[0].split("?")[0];
+  const hosts = hostPart.split(",").map((h) => {
+    const trimmed = h.trim();
+    return trimmed.includes(":") ? trimmed : `${trimmed}:27017`;
+  });
+  return { hosts };
+}
+
+function tcpProbe(host: string, port: number, timeoutMs = 4000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    const done = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+    socket.connect(port, host);
+  });
+}
+
+export async function checkCluster(uri: string): Promise<ClusterCheck> {
+  let hosts: string[];
+  try {
+    hosts = parseMongoUri(uri).hosts;
+  } catch {
+    return { reachable: false, error: "Could not parse URI" };
+  }
+  const [host, portStr] = hosts[0].split(":");
+  const reachable = await tcpProbe(host, Number(portStr));
+  if (!reachable) return { reachable: false, error: `Cannot reach ${hosts[0]}` };
+
+  // Best-effort version read via mongosh if present; failure is non-fatal.
+  try {
+    const { stdout } = await execFileAsync(
+      "mongosh",
+      [uri, "--quiet", "--eval", "db.version()"],
+      { timeout: 8000 }
+    );
+    return { reachable: true, version: stdout.trim() };
+  } catch {
+    return { reachable: true };
+  }
+}
+```
+
+- [ ] **Step 8: Run cluster-check tests**
+
+```bash
+npx vitest run src/lib/__tests__/cluster-check.test.ts
+```
+
+Expected: all 4 `parseMongoUri` tests PASS.
+
 - [ ] **Step 9: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: add config generator and process manager for mongosync"
+git commit -m "feat: process manager and cluster connectivity/version check"
 ```
 
 ---
 
-### Task 3: Poller + Migration API Routes
+### Task 4: Poller + Migration/Metrics/Settings/Cluster API Routes
 
 **Files:**
 - Create: `src/lib/poller.ts`
@@ -896,99 +1155,146 @@ git commit -m "feat: add config generator and process manager for mongosync"
 - Create: `src/app/api/migrations/[id]/resume/route.ts`
 - Create: `src/app/api/migrations/[id]/commit/route.ts`
 - Create: `src/app/api/migrations/[id]/reverse/route.ts`
-- Create: `src/app/api/metrics/[migrationId]/route.ts` (GET metrics)
-- Create: `src/app/api/settings/route.ts` (GET/PUT)
-- Create: `src/app/api/mongosync/version/route.ts` (GET — test binary)
-- Create: `src/app/api/migrations/[id]/logs/route.ts` (GET — tail log file)
+- Create: `src/app/api/migrations/[id]/progress/route.ts` (GET live progress passthrough)
+- Create: `src/app/api/migrations/[id]/logs/route.ts`
+- Create: `src/app/api/metrics/[migrationId]/route.ts`
+- Create: `src/app/api/settings/route.ts`
+- Create: `src/app/api/mongosync/version/route.ts`
+- Create: `src/app/api/cluster-check/route.ts`
+- Test: `src/lib/__tests__/poller.test.ts`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1 and 2
+- Consumes: everything from Tasks 1–3
 - Produces:
-  - `startPoller(): void` — starts the global polling interval
-  - `stopPoller(): void` — stops it
-  - REST API:
-    - `GET /api/migrations` → `Migration[]`
-    - `POST /api/migrations` → `Migration` (creates + spawns + starts)
-    - `GET /api/migrations/[id]` → `Migration`
-    - `DELETE /api/migrations/[id]` → kills process + deletes
-    - `POST /api/migrations/[id]/start` → proxies to mongosync
-    - `POST /api/migrations/[id]/pause` → proxies
-    - `POST /api/migrations/[id]/resume` → proxies
-    - `POST /api/migrations/[id]/commit` → proxies
-    - `POST /api/migrations/[id]/reverse` → proxies
-    - `GET /api/metrics/[migrationId]?since=` → `Metric[]`
-    - `GET /api/settings` → settings object
-    - `PUT /api/settings` → updates settings
-    - `GET /api/mongosync/version` → `{ version: string }`
-    - `GET /api/migrations/[id]/logs?lines=` → `{ lines: string[] }`
+  - `startPoller(intervalMs?): void`, `stopPoller(): void`, `pollOnce(): Promise<void>`, `progressToMetric(migrationId, p): MetricInput`
+  - REST API (see file list). Action routes verify state preconditions and surface mongosync errors:
+    - `POST /api/migrations/[id]/commit` rejects with 409 unless live `progress.canCommit === true`.
+    - `POST /api/migrations/[id]/reverse` rejects with 409 unless state is `COMMITTED` and the stored config had `reversible: true`.
 
-- [ ] **Step 1: Implement the poller**
+- [ ] **Step 1: Write failing test for the progress→metric mapping**
+
+This is the one piece of poller logic worth unit-testing in isolation (network and timers are not).
+
+Create `src/lib/__tests__/poller.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import type { ProgressResponse } from "@/lib/process-manager";
+
+async function load() {
+  return await import("@/lib/poller");
+}
+
+const sample: ProgressResponse = {
+  success: true,
+  progress: {
+    state: "RUNNING",
+    canCommit: true,
+    canWrite: false,
+    lagTimeSeconds: 3,
+    totalEventsApplied: 1000,
+    estimatedSecondsToCEACatchup: 12,
+    collectionCopy: { estimatedCopiedBytes: 5000, estimatedTotalBytes: 10000 },
+    indexBuilding: { indexesBuilt: 2, totalIndexesToBuild: 8 },
+    source: { pingLatencyMs: 15 },
+    destination: { pingLatencyMs: 22 },
+  },
+};
+
+describe("progressToMetric", () => {
+  it("derives copyProgress from bytes and maps fields", async () => {
+    const { progressToMetric } = await load();
+    const m = progressToMetric("mig1", sample);
+    expect(m.migrationId).toBe("mig1");
+    expect(m.state).toBe("RUNNING");
+    expect(m.copyProgress).toBe(50);
+    expect(m.estimatedCopiedBytes).toBe(5000);
+    expect(m.lagTimeSeconds).toBe(3);
+    expect(m.totalEventsApplied).toBe(1000);
+    expect(m.estimatedSecondsToCEACatchup).toBe(12);
+    expect(m.indexesBuilt).toBe(2);
+    expect(m.totalIndexesToBuild).toBe(8);
+    expect(m.sourcePingMs).toBe(15);
+    expect(m.destPingMs).toBe(22);
+  });
+
+  it("defaults copyProgress to 0 when total bytes is 0 or missing", async () => {
+    const { progressToMetric } = await load();
+    const m = progressToMetric("mig1", { success: true, progress: { state: "RUNNING", canCommit: false, canWrite: false } });
+    expect(m.copyProgress).toBe(0);
+    expect(m.indexesBuilt).toBe(0);
+    expect(m.sourcePingMs).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+npx vitest run src/lib/__tests__/poller.test.ts
+```
+
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement the poller**
 
 Create `src/lib/poller.ts`:
 
 ```ts
 import { getAllMigrations, updateMigration, insertMetric } from "./db";
 import { fetchProgress, isProcessAlive } from "./process-manager";
+import type { ProgressResponse } from "./process-manager";
+import type { MetricInput, MongosyncState } from "./types";
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
-const ACTIVE_STATES = ["RUNNING", "COMMITTING", "REVERSING"];
+// States where mongosync is actively reporting progress worth recording.
+const ACTIVE_STATES = ["RUNNING", "COMMITTING", "REVERSING", "PAUSED"];
 
-async function pollOnce(): Promise<void> {
-  const migrations = getAllMigrations();
+export function progressToMetric(migrationId: string, resp: ProgressResponse): MetricInput {
+  const p = resp.progress;
+  const copied = p?.collectionCopy?.estimatedCopiedBytes ?? 0;
+  const total = p?.collectionCopy?.estimatedTotalBytes ?? 0;
+  return {
+    migrationId,
+    state: p?.state ?? "RUNNING",
+    copyProgress: total > 0 ? (copied / total) * 100 : 0,
+    estimatedCopiedBytes: copied,
+    estimatedTotalBytes: total,
+    lagTimeSeconds: p?.lagTimeSeconds ?? null,
+    totalEventsApplied: p?.totalEventsApplied ?? 0,
+    estimatedSecondsToCEACatchup: p?.estimatedSecondsToCEACatchup ?? null,
+    indexesBuilt: p?.indexBuilding?.indexesBuilt ?? 0,
+    totalIndexesToBuild: p?.indexBuilding?.totalIndexesToBuild ?? 0,
+    sourcePingMs: p?.source?.pingLatencyMs ?? null,
+    destPingMs: p?.destination?.pingLatencyMs ?? null,
+  };
+}
 
-  for (const m of migrations) {
-    // Check if process is still alive
+export async function pollOnce(): Promise<void> {
+  for (const m of getAllMigrations()) {
+    // Reconcile a dead process.
     if (m.pid && !isProcessAlive(m.pid)) {
       updateMigration(m.id, { pid: null });
       continue;
     }
-
-    // Only poll active migrations with a running process
-    if (!m.pid || !ACTIVE_STATES.includes(m.state)) {
-      // Also poll PAUSED to detect external state changes
-      if (m.pid && m.state === "PAUSED") {
-        try {
-          const progress = await fetchProgress(m.port);
-          if (progress.progress.state !== m.state) {
-            updateMigration(m.id, { state: progress.progress.state as any });
-          }
-        } catch {
-          // Ignore — process may not be ready
-        }
-      }
-      continue;
-    }
+    if (!m.pid || !ACTIVE_STATES.includes(m.state)) continue;
 
     try {
-      const progress = await fetchProgress(m.port);
-      const p = progress.progress;
-
-      updateMigration(m.id, { state: p.state as any });
-
-      insertMetric({
-        migrationId: m.id,
-        state: p.state,
-        progress:
-          p.collectionCopy.estimatedTotalBytes > 0
-            ? (p.collectionCopy.estimatedCopiedBytes / p.collectionCopy.estimatedTotalBytes) * 100
-            : 0,
-        lagTimeSeconds: p.lagTimeSeconds,
-        totalEventsApplied: p.totalEventsApplied,
-        estimatedCopiedBytes: p.collectionCopy.estimatedCopiedBytes,
-        estimatedTotalBytes: p.collectionCopy.estimatedTotalBytes,
-      });
+      const resp = await fetchProgress(m.port);
+      const liveState = resp.progress?.state as MongosyncState | undefined;
+      if (liveState && liveState !== m.state) updateMigration(m.id, { state: liveState });
+      insertMetric(progressToMetric(m.id, resp));
     } catch {
-      // mongosync may not be ready yet — ignore
+      // process may still be initializing — ignore this tick
     }
   }
 }
 
-export function startPoller(intervalMs: number = 5000): void {
+export function startPoller(intervalMs = 5000): void {
   if (intervalId) return;
   intervalId = setInterval(pollOnce, intervalMs);
-  // Run once immediately
-  pollOnce();
+  void pollOnce();
 }
 
 export function stopPoller(): void {
@@ -999,75 +1305,68 @@ export function stopPoller(): void {
 }
 ```
 
-- [ ] **Step 2: Implement migrations API routes**
+- [ ] **Step 4: Run poller test to verify it passes**
+
+```bash
+npx vitest run src/lib/__tests__/poller.test.ts
+```
+
+Expected: both tests PASS.
+
+- [ ] **Step 5: Implement migrations collection route (list + create+spawn+start)**
 
 Create `src/app/api/migrations/route.ts`:
 
 ```ts
 import { NextRequest, NextResponse } from "next/server";
-import { getAllMigrations, createMigration } from "@/lib/db";
+import { getAllMigrations, createMigration, getMigration, updateMigration } from "@/lib/db";
 import { spawnMongosync, sendCommand } from "@/lib/process-manager";
 import { buildStartBody } from "@/lib/config-generator";
 import { startPoller } from "@/lib/poller";
+import { initApp } from "@/lib/init";
 
 export async function GET() {
-  const migrations = getAllMigrations();
-  return NextResponse.json(migrations);
+  initApp();
+  return NextResponse.json(getAllMigrations());
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
-  const { name, sourceUri, destUri, config } = body;
+  initApp();
+  const { name, sourceUri, destUri, config } = await request.json();
 
-  // Find next available port
-  const migrations = getAllMigrations();
-  const usedPorts = new Set(migrations.map((m) => m.port));
+  const used = new Set(getAllMigrations().map((m) => m.port));
   let port = 27182;
-  while (usedPorts.has(port)) port++;
+  while (used.has(port)) port++;
 
-  const migration = createMigration({ name, sourceUri, destUri, config, port });
+  const migration = createMigration({ name, sourceUri, destUri, config: config ?? {}, port });
 
   try {
-    // Spawn mongosync process
     spawnMongosync(migration);
 
-    // Wait for mongosync to be ready (up to 10s)
+    // Wait for the HTTP API to come up (up to 15s).
     let ready = false;
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 30; i++) {
       try {
         const res = await fetch(`http://localhost:${port}/api/v1/progress`);
-        if (res.ok) {
-          ready = true;
-          break;
-        }
-      } catch {
-        // not ready yet
-      }
+        if (res.ok) { ready = true; break; }
+      } catch { /* not ready */ }
       await new Promise((r) => setTimeout(r, 500));
     }
-
     if (!ready) {
-      return NextResponse.json({ error: "mongosync failed to start within 10s" }, { status: 500 });
+      return NextResponse.json({ error: "mongosync failed to start within 15s" }, { status: 500 });
     }
 
-    // Send /start command
-    const startBody = buildStartBody(migration);
-    await sendCommand(port, "start", startBody);
-
-    // Update state
-    const { updateMigration } = await import("@/lib/db");
+    await sendCommand(port, "start", buildStartBody(migration));
     updateMigration(migration.id, { state: "RUNNING" });
-
-    // Ensure poller is running
     startPoller();
-
-    const updated = (await import("@/lib/db")).getMigration(migration.id);
-    return NextResponse.json(updated, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(getMigration(migration.id), { status: 201 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 ```
+
+- [ ] **Step 6: Implement single-migration route (get + delete)**
 
 Create `src/app/api/migrations/[id]/route.ts`:
 
@@ -1079,25 +1378,43 @@ import { killMongosync } from "@/lib/process-manager";
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const migration = getMigration(id);
-  if (!migration) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(migration);
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const migration = getMigration(id);
-  if (!migration) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
   killMongosync(migration);
   deleteMigration(id);
   return NextResponse.json({ ok: true });
 }
 ```
 
-- [ ] **Step 3: Implement action routes (pause, resume, commit, reverse)**
+- [ ] **Step 7: Implement start/pause/resume action routes**
+
+Create `src/app/api/migrations/[id]/start/route.ts`:
+
+```ts
+import { NextRequest, NextResponse } from "next/server";
+import { getMigration, updateMigration } from "@/lib/db";
+import { sendCommand } from "@/lib/process-manager";
+import { buildStartBody } from "@/lib/config-generator";
+
+export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const migration = getMigration(id);
+  if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  try {
+    await sendCommand(migration.port, "start", buildStartBody(migration));
+    updateMigration(id, { state: "RUNNING" });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+  }
+}
+```
 
 Create `src/app/api/migrations/[id]/pause/route.ts`:
 
@@ -1114,8 +1431,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     await sendCommand(migration.port, "pause");
     updateMigration(id, { state: "PAUSED" });
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 ```
@@ -1135,32 +1452,43 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     await sendCommand(migration.port, "resume");
     updateMigration(id, { state: "RUNNING" });
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 ```
+
+- [ ] **Step 8: Implement commit route with `canCommit` gating**
 
 Create `src/app/api/migrations/[id]/commit/route.ts`:
 
 ```ts
 import { NextRequest, NextResponse } from "next/server";
 import { getMigration, updateMigration } from "@/lib/db";
-import { sendCommand } from "@/lib/process-manager";
+import { sendCommand, fetchProgress } from "@/lib/process-manager";
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const migration = getMigration(id);
   if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
+    const progress = await fetchProgress(migration.port);
+    if (!progress.progress?.canCommit) {
+      return NextResponse.json(
+        { error: "Cannot commit yet: canCommit is false. Wait for lag to reach ~0." },
+        { status: 409 }
+      );
+    }
     await sendCommand(migration.port, "commit");
     updateMigration(id, { state: "COMMITTING" });
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 ```
+
+- [ ] **Step 9: Implement reverse route with prerequisite gating**
 
 Create `src/app/api/migrations/[id]/reverse/route.ts`:
 
@@ -1168,45 +1496,62 @@ Create `src/app/api/migrations/[id]/reverse/route.ts`:
 import { NextRequest, NextResponse } from "next/server";
 import { getMigration, updateMigration } from "@/lib/db";
 import { sendCommand } from "@/lib/process-manager";
+import type { StartConfig } from "@/lib/types";
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const migration = getMigration(id);
   if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  if (migration.state !== "COMMITTED") {
+    return NextResponse.json(
+      { error: "Reverse is only available from the COMMITTED state." },
+      { status: 409 }
+    );
+  }
+  const cfg = JSON.parse(migration.config) as StartConfig;
+  if (!cfg.reversible) {
+    return NextResponse.json(
+      { error: "This migration was not started with reversible: true." },
+      { status: 409 }
+    );
+  }
+
   try {
     await sendCommand(migration.port, "reverse");
     updateMigration(id, { state: "REVERSING" });
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 ```
 
-Create `src/app/api/migrations/[id]/start/route.ts`:
+- [ ] **Step 10: Implement live progress passthrough route**
+
+The detail page reads rich live fields (direction mapping, oplog window, verification, warnings) that we don't persist as metrics. This route proxies the current `/progress`.
+
+Create `src/app/api/migrations/[id]/progress/route.ts`:
 
 ```ts
 import { NextRequest, NextResponse } from "next/server";
-import { getMigration, updateMigration } from "@/lib/db";
-import { sendCommand } from "@/lib/process-manager";
-import { buildStartBody } from "@/lib/config-generator";
+import { getMigration } from "@/lib/db";
+import { fetchProgress } from "@/lib/process-manager";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const migration = getMigration(id);
   if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
-    const startBody = buildStartBody(migration);
-    await sendCommand(migration.port, "start", startBody);
-    updateMigration(id, { state: "RUNNING" });
-    return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const progress = await fetchProgress(migration.port);
+    return NextResponse.json(progress);
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 503 });
   }
 }
 ```
 
-- [ ] **Step 4: Implement metrics, settings, version, and logs routes**
+- [ ] **Step 11: Implement metrics, logs, settings, version, cluster-check routes**
 
 Create `src/app/api/metrics/[migrationId]/route.ts`:
 
@@ -1217,8 +1562,30 @@ import { getMetrics } from "@/lib/db";
 export async function GET(req: NextRequest, { params }: { params: Promise<{ migrationId: string }> }) {
   const { migrationId } = await params;
   const since = req.nextUrl.searchParams.get("since");
-  const metrics = getMetrics(migrationId, since ? Number(since) : undefined);
-  return NextResponse.json(metrics);
+  return NextResponse.json(getMetrics(migrationId, since ? Number(since) : undefined));
+}
+```
+
+Create `src/app/api/migrations/[id]/logs/route.ts`:
+
+```ts
+import { NextRequest, NextResponse } from "next/server";
+import { getMigration } from "@/lib/db";
+import { getLogDir } from "@/lib/paths";
+import fs from "fs";
+import path from "path";
+
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!getMigration(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const lines = Number(req.nextUrl.searchParams.get("lines") || "200");
+  const which = req.nextUrl.searchParams.get("stream") === "stderr" ? "stderr.log" : "stdout.log";
+  const logFile = path.join(getLogDir(id), which);
+  if (!fs.existsSync(logFile)) return NextResponse.json({ lines: [] });
+
+  const all = fs.readFileSync(logFile, "utf-8").split("\n").filter(Boolean);
+  return NextResponse.json({ lines: all.slice(-lines) });
 }
 ```
 
@@ -1228,19 +1595,26 @@ Create `src/app/api/settings/route.ts`:
 import { NextRequest, NextResponse } from "next/server";
 import { getSetting, setSetting } from "@/lib/db";
 
+const KEYS = [
+  "mongosyncPath",
+  "pollInterval",
+  "basePort",
+  "defaultLoadLevel",
+  "defaultVerbosity",
+  "defaultVerification",
+  "defaultDisableTelemetry",
+];
+
 export async function GET() {
-  return NextResponse.json({
-    mongosyncPath: getSetting("mongosyncPath") || "",
-    pollInterval: getSetting("pollInterval") || "5000",
-  });
+  const out: Record<string, string> = {};
+  for (const k of KEYS) out[k] = getSetting(k) ?? "";
+  return NextResponse.json(out);
 }
 
 export async function PUT(request: NextRequest) {
   const body = await request.json();
   for (const [key, value] of Object.entries(body)) {
-    if (typeof value === "string") {
-      setSetting(key, value);
-    }
+    if (KEYS.includes(key) && typeof value === "string") setSetting(key, value);
   }
   return NextResponse.json({ ok: true });
 }
@@ -1250,92 +1624,148 @@ Create `src/app/api/mongosync/version/route.ts`:
 
 ```ts
 import { NextResponse } from "next/server";
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { getSetting } from "@/lib/db";
 
+const execFileAsync = promisify(execFile);
+
 export async function GET() {
-  const mongosyncPath = getSetting("mongosyncPath") || "mongosync";
+  const bin = getSetting("mongosyncPath") || "mongosync";
   try {
-    const output = execSync(`${mongosyncPath} --version`, {
-      timeout: 5000,
-      encoding: "utf-8",
-    }).trim();
-    return NextResponse.json({ version: output });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const { stdout } = await execFileAsync(bin, ["--version"], { timeout: 5000 });
+    return NextResponse.json({ version: stdout.trim() });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
 ```
 
-Create `src/app/api/migrations/[id]/logs/route.ts`:
+Create `src/app/api/cluster-check/route.ts`:
 
 ```ts
 import { NextRequest, NextResponse } from "next/server";
-import { getMigration } from "@/lib/db";
-import fs from "fs";
-import path from "path";
-import os from "os";
+import { checkCluster } from "@/lib/cluster-check";
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const migration = getMigration(id);
-  if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const lines = Number(req.nextUrl.searchParams.get("lines") || "100");
-  const dataDir = process.env.MONGOSYNC_UI_DIR || path.join(os.homedir(), ".mongosync-ui");
-  const logFile = path.join(dataDir, "logs", id, "stdout.log");
-
-  if (!fs.existsSync(logFile)) {
-    return NextResponse.json({ lines: [] });
+export async function POST(request: NextRequest) {
+  const { uri } = await request.json();
+  if (typeof uri !== "string" || !uri) {
+    return NextResponse.json({ reachable: false, error: "uri required" }, { status: 400 });
   }
-
-  const content = fs.readFileSync(logFile, "utf-8");
-  const allLines = content.split("\n").filter(Boolean);
-  const tail = allLines.slice(-lines);
-  return NextResponse.json({ lines: tail });
+  return NextResponse.json(await checkCluster(uri));
 }
 ```
 
-- [ ] **Step 5: Verify API routes compile**
+- [ ] **Step 12: Create init module stub (filled in Task 9)**
+
+So the routes above compile, create `src/lib/init.ts` now with a no-throw stub that starts the poller; Task 9 expands it.
+
+```ts
+import { startPoller } from "./poller";
+
+let initialized = false;
+
+export function initApp(): void {
+  if (initialized) return;
+  initialized = true;
+  startPoller();
+}
+```
+
+- [ ] **Step 13: Verify build + tests**
 
 ```bash
 npm run build 2>&1 | tail -20
+npm run test
 ```
 
-Expected: build succeeds (or only has minor warnings, no errors).
+Expected: build succeeds; all unit tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: add poller, migration API routes, metrics, settings, and log endpoints"
+git commit -m "feat: poller and full migration/metrics/settings/cluster API routes with commit+reverse gating"
 ```
 
 ---
 
-### Task 4: Dashboard Page + Migration Cards
+### Task 5: Dashboard — State Badge, Action Buttons, Migration Cards
 
 **Files:**
+- Create: `src/lib/state-machine.ts`
 - Create: `src/components/state-badge.tsx`
 - Create: `src/components/action-buttons.tsx`
 - Create: `src/components/migration-card.tsx`
 - Modify: `src/app/page.tsx`
+- Test: `src/lib/__tests__/state-machine.test.ts`
 
 **Interfaces:**
-- Consumes: `GET /api/migrations`, `POST /api/migrations/[id]/{pause,resume,commit,reverse}`, `DELETE /api/migrations/[id]` from Task 3
-- Produces: Dashboard page with migration cards, navigation to new migration form and detail pages
+- Consumes: `MongosyncState`, `Migration` (Task 1); migration action + delete routes (Task 4)
+- Produces:
+  - `state-machine.ts`: `availableActions(state: MongosyncState): ActionKind[]` where `ActionKind = "start" | "pause" | "resume" | "commit" | "reverse" | "delete"`; plus `STATE_COLORS: Record<MongosyncState, string>`
+  - `StateBadge`, `ActionButtons`, `MigrationCard` components
+  - Dashboard page wired to `GET /api/migrations` with 5s refresh
 
-- [ ] **Step 1: Create StateBadge component**
+- [ ] **Step 1: Write failing test for the state machine**
 
-Create `src/components/state-badge.tsx`:
+Create `src/lib/__tests__/state-machine.test.ts`:
 
-```tsx
-"use client";
+```ts
+import { describe, it, expect } from "vitest";
+import { availableActions } from "@/lib/state-machine";
 
-import { Badge } from "@/components/ui/badge";
-import type { MongosyncState } from "@/lib/types";
+describe("availableActions", () => {
+  it("IDLE allows start + delete", () => {
+    expect(availableActions("IDLE")).toEqual(["start", "delete"]);
+  });
+  it("RUNNING allows pause + commit + delete", () => {
+    expect(availableActions("RUNNING")).toEqual(["pause", "commit", "delete"]);
+  });
+  it("PAUSED allows resume + delete", () => {
+    expect(availableActions("PAUSED")).toEqual(["resume", "delete"]);
+  });
+  it("COMMITTED allows reverse + delete", () => {
+    expect(availableActions("COMMITTED")).toEqual(["reverse", "delete"]);
+  });
+  it("COMMITTING and REVERSING are transient (delete only)", () => {
+    expect(availableActions("COMMITTING")).toEqual(["delete"]);
+    expect(availableActions("REVERSING")).toEqual(["delete"]);
+  });
+});
+```
 
-const stateColors: Record<MongosyncState, string> = {
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+npx vitest run src/lib/__tests__/state-machine.test.ts
+```
+
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement the state machine**
+
+Create `src/lib/state-machine.ts`:
+
+```ts
+import type { MongosyncState } from "./types";
+
+export type ActionKind = "start" | "pause" | "resume" | "commit" | "reverse" | "delete";
+
+const ACTIONS: Record<MongosyncState, ActionKind[]> = {
+  IDLE: ["start", "delete"],
+  RUNNING: ["pause", "commit", "delete"],
+  PAUSED: ["resume", "delete"],
+  COMMITTING: ["delete"],
+  COMMITTED: ["reverse", "delete"],
+  REVERSING: ["delete"],
+};
+
+export function availableActions(state: MongosyncState): ActionKind[] {
+  return ACTIONS[state] ?? ["delete"];
+}
+
+export const STATE_COLORS: Record<MongosyncState, string> = {
   IDLE: "bg-gray-100 text-gray-700 border-gray-300",
   RUNNING: "bg-blue-100 text-blue-700 border-blue-300",
   PAUSED: "bg-yellow-100 text-yellow-700 border-yellow-300",
@@ -1343,17 +1773,39 @@ const stateColors: Record<MongosyncState, string> = {
   COMMITTED: "bg-green-100 text-green-700 border-green-300",
   REVERSING: "bg-orange-100 text-orange-700 border-orange-300",
 };
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+```bash
+npx vitest run src/lib/__tests__/state-machine.test.ts
+```
+
+Expected: all tests PASS.
+
+- [ ] **Step 5: Create StateBadge**
+
+Create `src/components/state-badge.tsx`:
+
+```tsx
+"use client";
+
+import { Badge } from "@/components/ui/badge";
+import { STATE_COLORS } from "@/lib/state-machine";
+import type { MongosyncState } from "@/lib/types";
 
 export function StateBadge({ state }: { state: MongosyncState }) {
   return (
-    <Badge variant="outline" className={stateColors[state] || ""}>
+    <Badge variant="outline" className={STATE_COLORS[state] || ""}>
       {state}
     </Badge>
   );
 }
 ```
 
-- [ ] **Step 2: Create ActionButtons component**
+- [ ] **Step 6: Create ActionButtons**
+
+`commit` and `reverse` open a confirmation dialog (handled by the parent via `onConfirm`); `delete` confirms inline. Errors surface via the toast hook.
 
 Create `src/components/action-buttons.tsx`:
 
@@ -1361,80 +1813,81 @@ Create `src/components/action-buttons.tsx`:
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/use-toast";
+import { availableActions, type ActionKind } from "@/lib/state-machine";
 import type { Migration } from "@/lib/types";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-async function postAction(id: string, action: string) {
-  const res = await fetch(`/api/migrations/${id}/${action}`, { method: "POST" });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || `Action ${action} failed`);
-  }
-}
-
-async function deleteMigration(id: string) {
-  const res = await fetch(`/api/migrations/${id}`, { method: "DELETE" });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || "Delete failed");
-  }
-}
+const LABELS: Record<ActionKind, string> = {
+  start: "Start",
+  pause: "Pause",
+  resume: "Resume",
+  commit: "Commit",
+  reverse: "Reverse",
+  delete: "Delete",
+};
 
 export function ActionButtons({
   migration,
   onAction,
+  onConfirmCommit,
 }: {
   migration: Migration;
   onAction?: () => void;
+  onConfirmCommit?: () => void; // detail page wires this to the pre-commit checklist dialog
 }) {
   const router = useRouter();
-  const [loading, setLoading] = useState<string | null>(null);
+  const { toast } = useToast();
+  const [loading, setLoading] = useState<ActionKind | null>(null);
 
-  const handle = async (action: string) => {
+  const run = async (action: ActionKind) => {
     setLoading(action);
     try {
       if (action === "delete") {
-        if (!confirm(`Delete migration "${migration.name}"?`)) return;
-        await deleteMigration(migration.id);
+        if (!confirm(`Delete migration "${migration.name}"? This kills its mongosync process.`)) return;
+        const res = await fetch(`/api/migrations/${migration.id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
       } else {
-        await postAction(migration.id, action);
+        const res = await fetch(`/api/migrations/${migration.id}/${action}`, { method: "POST" });
+        if (!res.ok) throw new Error((await res.json()).error || `${action} failed`);
       }
       onAction?.();
       router.refresh();
-    } catch (err: any) {
-      alert(err.message);
+    } catch (err) {
+      toast({ variant: "destructive", title: "Action failed", description: (err as Error).message });
     } finally {
       setLoading(null);
     }
   };
 
-  const btn = (action: string, label: string, variant: "default" | "outline" | "destructive" = "outline") => (
-    <Button
-      key={action}
-      size="sm"
-      variant={variant}
-      disabled={loading !== null}
-      onClick={() => handle(action)}
-    >
-      {loading === action ? "..." : label}
-    </Button>
-  );
-
-  const actions: Record<string, React.ReactNode[]> = {
-    IDLE: [btn("start", "Start", "default"), btn("delete", "Delete", "destructive")],
-    RUNNING: [btn("pause", "Pause"), btn("commit", "Commit"), btn("delete", "Delete", "destructive")],
-    PAUSED: [btn("resume", "Resume", "default"), btn("delete", "Delete", "destructive")],
-    COMMITTING: [],
-    COMMITTED: [btn("reverse", "Reverse"), btn("delete", "Delete", "destructive")],
-    REVERSING: [],
+  const onClick = (action: ActionKind) => {
+    if (action === "commit" && onConfirmCommit) return onConfirmCommit();
+    if ((action === "commit" || action === "reverse") && !onConfirmCommit) {
+      if (!confirm(`${LABELS[action]} this migration? This step is hard to undo.`)) return;
+    }
+    void run(action);
   };
 
-  return <div className="flex gap-2">{actions[migration.state] || []}</div>;
+  return (
+    <div className="flex gap-2">
+      {availableActions(migration.state).map((action) => (
+        <Button
+          key={action}
+          size="sm"
+          variant={action === "delete" ? "destructive" : action === "start" || action === "resume" ? "default" : "outline"}
+          disabled={loading !== null}
+          onClick={() => onClick(action)}
+        >
+          {loading === action ? "..." : LABELS[action]}
+        </Button>
+      ))}
+    </div>
+  );
 }
 ```
 
-- [ ] **Step 3: Create MigrationCard component**
+- [ ] **Step 7: Create MigrationCard**
 
 Create `src/components/migration-card.tsx`:
 
@@ -1442,28 +1895,18 @@ Create `src/components/migration-card.tsx`:
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { StateBadge } from "./state-badge";
 import { ActionButtons } from "./action-buttons";
 import type { Migration } from "@/lib/types";
 import Link from "next/link";
 
-export function MigrationCard({
-  migration,
-  onAction,
-}: {
-  migration: Migration;
-  onAction?: () => void;
-}) {
-  // Parse progress from config or use 0
+export function MigrationCard({ migration, onAction }: { migration: Migration; onAction?: () => void }) {
   return (
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <Link href={`/migrations/${migration.id}`}>
-            <CardTitle className="text-base hover:underline cursor-pointer">
-              {migration.name}
-            </CardTitle>
+            <CardTitle className="text-base hover:underline cursor-pointer">{migration.name}</CardTitle>
           </Link>
           <StateBadge state={migration.state} />
         </div>
@@ -1473,7 +1916,7 @@ export function MigrationCard({
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span>Port: {migration.port}</span>
             {migration.pid && <span>PID: {migration.pid}</span>}
           </div>
@@ -1485,7 +1928,7 @@ export function MigrationCard({
 }
 ```
 
-- [ ] **Step 4: Build the Dashboard page**
+- [ ] **Step 8: Build the dashboard page**
 
 Replace `src/app/page.tsx`:
 
@@ -1504,37 +1947,26 @@ export default function DashboardPage() {
 
   const fetchMigrations = async () => {
     try {
-      const res = await fetch("/api/migrations");
-      const data = await res.json();
-      setMigrations(data);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
+      setMigrations(await (await fetch("/api/migrations")).json());
+    } catch { /* ignore */ } finally { setLoading(false); }
   };
 
   useEffect(() => {
     fetchMigrations();
-    const interval = setInterval(fetchMigrations, 5000);
-    return () => clearInterval(interval);
+    const t = setInterval(fetchMigrations, 5000);
+    return () => clearInterval(t);
   }, []);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Migrations</h1>
-        <Link href="/migrations/new">
-          <Button>New Migration</Button>
-        </Link>
+        <Link href="/migrations/new"><Button>New Migration</Button></Link>
       </div>
-
       {loading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : migrations.length === 0 ? (
-        <p className="text-muted-foreground">
-          No migrations yet. Create one to get started.
-        </p>
+        <p className="text-muted-foreground">No migrations yet. Create one to get started.</p>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {migrations.map((m) => (
@@ -1547,82 +1979,340 @@ export default function DashboardPage() {
 }
 ```
 
-- [ ] **Step 5: Verify the dashboard renders**
+- [ ] **Step 9: Verify dashboard renders**
 
 ```bash
 npm run dev &
 sleep 3
-curl -s http://localhost:3000 | grep -o "Migrations"
+curl -s http://localhost:3000 | grep -o "Migrations" | head -1
 kill %1
 ```
 
-Expected: "Migrations" appears in output.
+Expected: prints `Migrations`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: add dashboard page with migration cards, state badges, and action buttons"
+git commit -m "feat: dashboard with state-aware action buttons and migration cards"
 ```
 
 ---
 
-### Task 5: New Migration Form
+### Task 6: New Migration Form (full options + connection test)
 
 **Files:**
+- Create: `src/lib/schemas.ts`
+- Create: `src/components/cluster-uri-field.tsx`
+- Create: `src/components/namespace-filter-fields.tsx`
 - Create: `src/components/migration-form.tsx`
 - Create: `src/app/migrations/new/page.tsx`
-- Create: `src/lib/schemas.ts` (zod schemas)
+- Test: `src/lib/__tests__/schemas.test.ts`
 
 **Interfaces:**
-- Consumes: `POST /api/migrations` from Task 3
-- Produces: `/migrations/new` page with complete form, navigates to dashboard on success
+- Consumes: `POST /api/migrations`, `POST /api/cluster-check` (Task 4); `StartConfig`, `NamespaceFilter` types (Task 1)
+- Produces:
+  - `schemas.ts`: `migrationFormSchema` (zod), `MigrationFormValues` type, `formValuesToConfig(values): StartConfig`
+  - `ClusterUriField` (input + Test button calling `/api/cluster-check`)
+  - `NamespaceFilterFields` (repeatable include/exclude rows with database/regex/collections)
+  - `MigrationForm` + `/migrations/new` page
 
-- [ ] **Step 1: Define zod schemas**
+- [ ] **Step 1: Write failing tests for schema → config mapping**
+
+Create `src/lib/__tests__/schemas.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import { migrationFormSchema, formValuesToConfig } from "@/lib/schemas";
+
+const base = {
+  name: "m",
+  sourceUri: "mongodb://a",
+  destUri: "mongodb://b",
+  reversible: false,
+  buildIndexes: "afterDataCopy" as const,
+  detectRandomId: true,
+  preExistingDestinationData: false,
+  verificationEnabled: true,
+  loadLevel: 3,
+  verbosity: "INFO" as const,
+  includeNamespaces: [],
+  excludeNamespaces: [],
+  shardingEntries: [],
+};
+
+describe("migrationFormSchema", () => {
+  it("rejects a non-mongodb source URI", () => {
+    const r = migrationFormSchema.safeParse({ ...base, sourceUri: "http://x" });
+    expect(r.success).toBe(false);
+  });
+  it("accepts a valid minimal form", () => {
+    expect(migrationFormSchema.safeParse(base).success).toBe(true);
+  });
+});
+
+describe("formValuesToConfig", () => {
+  it("only includes namespaces when non-empty and trims regex", () => {
+    const cfg = formValuesToConfig({
+      ...base,
+      includeNamespaces: [{ database: "sales", collections: "EMEA, APAC", databaseRegex: "", collectionsRegex: "" }],
+      excludeNamespaces: [{ database: "", collections: "", databaseRegex: "^tmp_", collectionsRegex: "" }],
+    });
+    expect(cfg.includeNamespaces).toEqual([{ database: "sales", collections: ["EMEA", "APAC"] }]);
+    expect(cfg.excludeNamespaces).toEqual([{ databaseRegex: { pattern: "^tmp_" } }]);
+  });
+
+  it("omits loadLevel when at default 3 but keeps non-default", () => {
+    expect(formValuesToConfig(base).loadLevel).toBeUndefined();
+    expect(formValuesToConfig({ ...base, loadLevel: 4 }).loadLevel).toBe(4);
+  });
+
+  it("maps verification toggle to verificationEnabled", () => {
+    expect(formValuesToConfig(base).verificationEnabled).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```bash
+npx vitest run src/lib/__tests__/schemas.test.ts
+```
+
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement schemas + mapping**
 
 Create `src/lib/schemas.ts`:
 
 ```ts
 import { z } from "zod";
+import type { NamespaceFilter, StartConfig } from "./types";
 
-export const namespaceFilterSchema = z.object({
-  database: z.string().min(1, "Database name required"),
-  collection: z.string().optional(),
+export const namespaceRowSchema = z.object({
+  database: z.string().default(""),
+  databaseRegex: z.string().default(""),
+  collections: z.string().default(""), // comma-separated in the UI
+  collectionsRegex: z.string().default(""),
+});
+
+export const shardingEntrySchema = z.object({
+  database: z.string().min(1),
+  collection: z.string().min(1),
+  shardKey: z.string().min(1), // "field:1, other:hashed" parsed on submit
 });
 
 export const migrationFormSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  sourceUri: z.string().min(1, "Source URI is required").startsWith("mongodb", "Must be a MongoDB URI"),
-  destUri: z.string().min(1, "Destination URI is required").startsWith("mongodb", "Must be a MongoDB URI"),
+  sourceUri: z.string().startsWith("mongodb", "Must be a mongodb:// or mongodb+srv:// URI"),
+  destUri: z.string().startsWith("mongodb", "Must be a mongodb:// or mongodb+srv:// URI"),
   reversible: z.boolean().default(false),
-  enableUserWriteBlocking: z.boolean().default(false),
-  buildIndexes: z.enum(["always", "never"]).default("always"),
-  includeNamespaces: z.array(namespaceFilterSchema).default([]),
-  excludeNamespaces: z.array(namespaceFilterSchema).default([]),
-  loadLevel: z.number().min(1).max(5).default(3),
-  verification: z.boolean().default(false),
-  hotDocuments: z.string().default(""),
+  buildIndexes: z
+    .enum(["afterDataCopy", "beforeDataCopy", "excludeHashed", "excludeHashedAfterCopy", "never"])
+    .default("afterDataCopy"),
+  detectRandomId: z.boolean().default(true),
+  preExistingDestinationData: z.boolean().default(false),
+  verificationEnabled: z.boolean().default(true),
+  loadLevel: z.number().min(1).max(4).default(3),
+  verbosity: z.enum(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "PANIC"]).default("INFO"),
+  includeNamespaces: z.array(namespaceRowSchema).default([]),
+  excludeNamespaces: z.array(namespaceRowSchema).default([]),
+  shardingEntries: z.array(shardingEntrySchema).default([]),
 });
 
 export type MigrationFormValues = z.infer<typeof migrationFormSchema>;
+type NamespaceRow = z.infer<typeof namespaceRowSchema>;
+
+function rowToFilter(row: NamespaceRow): NamespaceFilter | null {
+  const f: NamespaceFilter = {};
+  if (row.database.trim()) f.database = row.database.trim();
+  else if (row.databaseRegex.trim()) f.databaseRegex = { pattern: row.databaseRegex.trim() };
+  else return null; // a row needs at least a database or databaseRegex
+  const cols = row.collections.split(",").map((c) => c.trim()).filter(Boolean);
+  if (cols.length) f.collections = cols;
+  if (row.collectionsRegex.trim()) f.collectionsRegex = { pattern: row.collectionsRegex.trim() };
+  return f;
+}
+
+export function formValuesToConfig(values: MigrationFormValues): StartConfig {
+  const cfg: StartConfig = {
+    buildIndexes: values.buildIndexes,
+    reversible: values.reversible,
+    detectRandomId: values.detectRandomId,
+    preExistingDestinationData: values.preExistingDestinationData,
+    verificationEnabled: values.verificationEnabled,
+    verbosity: values.verbosity,
+  };
+  if (values.loadLevel !== 3) cfg.loadLevel = values.loadLevel;
+
+  const inc = values.includeNamespaces.map(rowToFilter).filter((x): x is NamespaceFilter => x !== null);
+  const exc = values.excludeNamespaces.map(rowToFilter).filter((x): x is NamespaceFilter => x !== null);
+  if (inc.length) cfg.includeNamespaces = inc;
+  if (exc.length) cfg.excludeNamespaces = exc;
+
+  if (values.shardingEntries.length) {
+    cfg.sharding = {
+      shardingEntries: values.shardingEntries.map((e) => ({
+        database: e.database,
+        collection: e.collection,
+        shardCollection: {
+          key: e.shardKey.split(",").map((part) => {
+            const [field, dir] = part.split(":").map((s) => s.trim());
+            return { [field]: dir === "hashed" ? ("hashed" as const) : (1 as const) };
+          }),
+        },
+      })),
+    };
+  }
+  return cfg;
+}
 ```
 
-- [ ] **Step 2: Create the migration form component**
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+npx vitest run src/lib/__tests__/schemas.test.ts
+```
+
+Expected: all tests PASS.
+
+- [ ] **Step 5: Create ClusterUriField (input + connectivity test)**
+
+Create `src/components/cluster-uri-field.tsx`:
+
+```tsx
+"use client";
+
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { useState } from "react";
+
+export function ClusterUriField({
+  id,
+  label,
+  value,
+  error,
+  register,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  error?: string;
+  register: React.ComponentProps<typeof Input>;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const test = async () => {
+    setTesting(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/cluster-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uri: value }),
+      });
+      const data = await res.json();
+      setResult(
+        data.reachable
+          ? { ok: true, msg: data.version ? `Reachable — MongoDB ${data.version}` : "Reachable" }
+          : { ok: false, msg: data.error || "Unreachable" }
+      );
+    } catch (e) {
+      setResult({ ok: false, msg: (e as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="flex gap-2">
+        <Input id={id} placeholder="mongodb://..." {...register} />
+        <Button type="button" variant="outline" disabled={testing || !value} onClick={test}>
+          {testing ? "Testing..." : "Test"}
+        </Button>
+      </div>
+      {error && <p className="text-sm text-red-500">{error}</p>}
+      {result && (
+        <p className={`text-sm ${result.ok ? "text-green-600" : "text-red-500"}`}>{result.msg}</p>
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 6: Create NamespaceFilterFields**
+
+Create `src/components/namespace-filter-fields.tsx`:
+
+```tsx
+"use client";
+
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { useFieldArray, type Control, type UseFormRegister } from "react-hook-form";
+import type { MigrationFormValues } from "@/lib/schemas";
+
+export function NamespaceFilterFields({
+  control,
+  register,
+  name,
+  label,
+}: {
+  control: Control<MigrationFormValues>;
+  register: UseFormRegister<MigrationFormValues>;
+  name: "includeNamespaces" | "excludeNamespaces";
+  label: string;
+}) {
+  const fa = useFieldArray({ control, name });
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      {fa.fields.map((field, i) => (
+        <div key={field.id} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+          <Input placeholder="database" {...register(`${name}.${i}.database`)} />
+          <Input placeholder="collections (comma-separated)" {...register(`${name}.${i}.collections`)} />
+          <Button type="button" variant="outline" size="sm" onClick={() => fa.remove(i)}>X</Button>
+          <Input placeholder="databaseRegex (optional)" {...register(`${name}.${i}.databaseRegex`)} />
+          <Input placeholder="collectionsRegex (optional)" {...register(`${name}.${i}.collectionsRegex`)} />
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => fa.append({ database: "", collections: "", databaseRegex: "", collectionsRegex: "" })}
+      >
+        Add {label} row
+      </Button>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 7: Create the MigrationForm**
 
 Create `src/components/migration-form.tsx`:
 
 ```tsx
 "use client";
 
-import { useForm, useFieldArray } from "react-hook-form";
+import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { migrationFormSchema, type MigrationFormValues } from "@/lib/schemas";
+import { migrationFormSchema, formValuesToConfig, type MigrationFormValues } from "@/lib/schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ClusterUriField } from "./cluster-uri-field";
+import { NamespaceFilterFields } from "./namespace-filter-fields";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -1634,44 +2324,22 @@ export function MigrationForm() {
   const form = useForm<MigrationFormValues>({
     resolver: zodResolver(migrationFormSchema),
     defaultValues: {
-      name: "",
-      sourceUri: "",
-      destUri: "",
-      reversible: false,
-      enableUserWriteBlocking: false,
-      buildIndexes: "always",
-      includeNamespaces: [],
-      excludeNamespaces: [],
-      loadLevel: 3,
-      verification: false,
-      hotDocuments: "",
+      name: "", sourceUri: "", destUri: "",
+      reversible: false, buildIndexes: "afterDataCopy", detectRandomId: true,
+      preExistingDestinationData: false, verificationEnabled: true,
+      loadLevel: 3, verbosity: "INFO",
+      includeNamespaces: [], excludeNamespaces: [], shardingEntries: [],
     },
   });
 
-  const includeNs = useFieldArray({ control: form.control, name: "includeNamespaces" });
-  const excludeNs = useFieldArray({ control: form.control, name: "excludeNamespaces" });
+  const reversible = form.watch("reversible");
+  const hasFilters =
+    form.watch("includeNamespaces").length > 0 || form.watch("excludeNamespaces").length > 0;
 
   const onSubmit = async (values: MigrationFormValues) => {
     setSubmitting(true);
     setError(null);
     try {
-      const config: Record<string, unknown> = {};
-      if (values.reversible) config.reversible = true;
-      if (values.enableUserWriteBlocking) config.enableUserWriteBlocking = true;
-      if (values.buildIndexes === "never") config.buildIndexes = "never";
-      if (values.includeNamespaces.length > 0) config.includeNamespaces = values.includeNamespaces;
-      if (values.excludeNamespaces.length > 0) config.excludeNamespaces = values.excludeNamespaces;
-      if (values.loadLevel !== 3) config.loadLevel = values.loadLevel;
-      if (values.verification) config.verification = { enabled: true };
-      if (values.hotDocuments) {
-        try {
-          config.hotDocuments = JSON.parse(values.hotDocuments);
-        } catch {
-          setError("hotDocuments must be valid JSON");
-          return;
-        }
-      }
-
       const res = await fetch("/api/migrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1679,18 +2347,13 @@ export function MigrationForm() {
           name: values.name,
           sourceUri: values.sourceUri,
           destUri: values.destUri,
-          config,
+          config: formValuesToConfig(values),
         }),
       });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to create migration");
-      }
-
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to create migration");
       router.push("/");
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setSubmitting(false);
     }
@@ -1698,9 +2361,7 @@ export function MigrationForm() {
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 max-w-2xl">
-      {error && (
-        <div className="rounded-md bg-red-50 p-4 text-sm text-red-700">{error}</div>
-      )}
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
       <div className="space-y-2">
         <Label htmlFor="name">Migration Name</Label>
@@ -1710,158 +2371,90 @@ export function MigrationForm() {
         )}
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="sourceUri">Source Cluster URI</Label>
-        <Input id="sourceUri" {...form.register("sourceUri")} placeholder="mongodb://..." />
-        {form.formState.errors.sourceUri && (
-          <p className="text-sm text-red-500">{form.formState.errors.sourceUri.message}</p>
-        )}
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="destUri">Destination Cluster URI</Label>
-        <Input id="destUri" {...form.register("destUri")} placeholder="mongodb://..." />
-        {form.formState.errors.destUri && (
-          <p className="text-sm text-red-500">{form.formState.errors.destUri.message}</p>
-        )}
-      </div>
+      <ClusterUriField
+        id="sourceUri" label="Source Cluster URI" value={form.watch("sourceUri")}
+        error={form.formState.errors.sourceUri?.message} register={form.register("sourceUri")}
+      />
+      <ClusterUriField
+        id="destUri" label="Destination Cluster URI" value={form.watch("destUri")}
+        error={form.formState.errors.destUri?.message} register={form.register("destUri")}
+      />
 
       <div className="space-y-4 rounded-md border p-4">
         <h3 className="font-medium">Sync Options</h3>
-
         <div className="flex items-center justify-between">
           <Label htmlFor="reversible">Reversible</Label>
-          <Switch
-            id="reversible"
-            checked={form.watch("reversible")}
-            onCheckedChange={(v) => form.setValue("reversible", v)}
-          />
+          <Switch id="reversible" checked={reversible}
+            onCheckedChange={(v) => form.setValue("reversible", v)} />
         </div>
-
+        {reversible && hasFilters && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              Reverse sync is incompatible with namespace filtering. Remove filters or disable reversible.
+            </AlertDescription>
+          </Alert>
+        )}
         <div className="flex items-center justify-between">
-          <Label htmlFor="writeBlocking">Enable User Write Blocking</Label>
-          <Switch
-            id="writeBlocking"
-            checked={form.watch("enableUserWriteBlocking")}
-            onCheckedChange={(v) => form.setValue("enableUserWriteBlocking", v)}
-          />
+          <Label htmlFor="detectRandomId">Detect Random _id</Label>
+          <Switch id="detectRandomId" checked={form.watch("detectRandomId")}
+            onCheckedChange={(v) => form.setValue("detectRandomId", v)} />
         </div>
-
+        <div className="flex items-center justify-between">
+          <Label htmlFor="preExisting">Allow Pre-existing Destination Data</Label>
+          <Switch id="preExisting" checked={form.watch("preExistingDestinationData")}
+            onCheckedChange={(v) => form.setValue("preExistingDestinationData", v)} />
+        </div>
         <div className="flex items-center justify-between">
           <Label htmlFor="buildIndexes">Build Indexes</Label>
-          <select
-            id="buildIndexes"
-            className="rounded border px-2 py-1 text-sm"
-            {...form.register("buildIndexes")}
-          >
-            <option value="always">Always</option>
-            <option value="never">Never</option>
+          <select id="buildIndexes" className="rounded border px-2 py-1 text-sm" {...form.register("buildIndexes")}>
+            <option value="afterDataCopy">afterDataCopy</option>
+            <option value="beforeDataCopy">beforeDataCopy</option>
+            <option value="excludeHashed">excludeHashed</option>
+            <option value="excludeHashedAfterCopy">excludeHashedAfterCopy</option>
+            <option value="never">never</option>
           </select>
+        </div>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="verification">Enable Embedded Verification</Label>
+          <Switch id="verification" checked={form.watch("verificationEnabled")}
+            onCheckedChange={(v) => form.setValue("verificationEnabled", v)} />
         </div>
       </div>
 
       <Collapsible>
         <CollapsibleTrigger asChild>
-          <Button variant="ghost" type="button" className="w-full justify-start">
-            + Namespace Filtering
-          </Button>
+          <Button variant="ghost" type="button" className="w-full justify-start">+ Namespace Filtering</Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-4 pt-2">
-          <div className="space-y-2">
-            <Label>Include Namespaces</Label>
-            {includeNs.fields.map((field, i) => (
-              <div key={field.id} className="flex gap-2">
-                <Input
-                  placeholder="database"
-                  {...form.register(`includeNamespaces.${i}.database`)}
-                />
-                <Input
-                  placeholder="collection (optional)"
-                  {...form.register(`includeNamespaces.${i}.collection`)}
-                />
-                <Button type="button" variant="outline" size="sm" onClick={() => includeNs.remove(i)}>
-                  X
-                </Button>
-              </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => includeNs.append({ database: "", collection: "" })}
-            >
-              Add Include
-            </Button>
-          </div>
-
-          <div className="space-y-2">
-            <Label>Exclude Namespaces</Label>
-            {excludeNs.fields.map((field, i) => (
-              <div key={field.id} className="flex gap-2">
-                <Input
-                  placeholder="database"
-                  {...form.register(`excludeNamespaces.${i}.database`)}
-                />
-                <Input
-                  placeholder="collection (optional)"
-                  {...form.register(`excludeNamespaces.${i}.collection`)}
-                />
-                <Button type="button" variant="outline" size="sm" onClick={() => excludeNs.remove(i)}>
-                  X
-                </Button>
-              </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => excludeNs.append({ database: "", collection: "" })}
-            >
-              Add Exclude
-            </Button>
-          </div>
+          <NamespaceFilterFields control={form.control} register={form.register}
+            name="includeNamespaces" label="Include" />
+          <NamespaceFilterFields control={form.control} register={form.register}
+            name="excludeNamespaces" label="Exclude" />
         </CollapsibleContent>
       </Collapsible>
 
       <Collapsible>
         <CollapsibleTrigger asChild>
-          <Button variant="ghost" type="button" className="w-full justify-start">
-            + Advanced Options
-          </Button>
+          <Button variant="ghost" type="button" className="w-full justify-start">+ Advanced (performance & logging)</Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-4 pt-2">
           <div className="space-y-2">
-            <Label>Load Level: {form.watch("loadLevel")}</Label>
-            <Slider
-              min={1}
-              max={5}
-              step={1}
-              value={[form.watch("loadLevel")]}
-              onValueChange={([v]) => form.setValue("loadLevel", v)}
-            />
+            <Label>Load Level: {form.watch("loadLevel")} (1 = gentlest, 4 = fastest)</Label>
+            <Slider min={1} max={4} step={1} value={[form.watch("loadLevel")]}
+              onValueChange={([v]) => form.setValue("loadLevel", v)} />
           </div>
-
           <div className="flex items-center justify-between">
-            <Label htmlFor="verification">Enable Verification</Label>
-            <Switch
-              id="verification"
-              checked={form.watch("verification")}
-              onCheckedChange={(v) => form.setValue("verification", v)}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="hotDocuments">Hot Documents (JSON)</Label>
-            <Input
-              id="hotDocuments"
-              {...form.register("hotDocuments")}
-              placeholder='[{"database":"db","collection":"coll","id":"..."}]'
-            />
+            <Label htmlFor="verbosity">Log Verbosity</Label>
+            <select id="verbosity" className="rounded border px-2 py-1 text-sm" {...form.register("verbosity")}>
+              {["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "PANIC"].map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
           </div>
         </CollapsibleContent>
       </Collapsible>
 
-      <Button type="submit" disabled={submitting} className="w-full">
+      <Button type="submit" disabled={submitting || (reversible && hasFilters)} className="w-full">
         {submitting ? "Creating..." : "Create & Start Migration"}
       </Button>
     </form>
@@ -1869,7 +2462,7 @@ export function MigrationForm() {
 }
 ```
 
-- [ ] **Step 3: Create the new migration page**
+- [ ] **Step 8: Create the new-migration page**
 
 Create `src/app/migrations/new/page.tsx`:
 
@@ -1886,71 +2479,254 @@ export default function NewMigrationPage() {
 }
 ```
 
-- [ ] **Step 4: Verify the form page renders**
+- [ ] **Step 9: Verify build + form page render**
 
 ```bash
+npm run build 2>&1 | tail -10
 npm run dev &
 sleep 3
-curl -s http://localhost:3000/migrations/new | grep -o "New Migration"
+curl -s http://localhost:3000/migrations/new | grep -o "New Migration" | head -1
 kill %1
 ```
 
-Expected: "New Migration" in output.
+Expected: build succeeds; prints `New Migration`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: add new migration form with zod validation and namespace filtering"
+git commit -m "feat: new migration form with full start options, namespace filters, and connection test"
 ```
 
 ---
 
-### Task 6: Migration Detail Page with Charts and Logs
+### Task 7: Migration Detail — Live Progress Panels, Charts, Logs
 
 **Files:**
+- Create: `src/lib/format.ts`
+- Create: `src/components/progress-panel.tsx`
+- Create: `src/components/verification-panel.tsx`
 - Create: `src/components/metrics-charts.tsx`
 - Create: `src/components/logs-panel.tsx`
 - Create: `src/app/migrations/[id]/page.tsx`
+- Test: `src/lib/__tests__/format.test.ts`
 
 **Interfaces:**
-- Consumes: `GET /api/migrations/[id]`, `GET /api/metrics/[migrationId]`, `GET /api/migrations/[id]/logs`, action routes from Task 3; `StateBadge`, `ActionButtons` from Task 4
-- Produces: `/migrations/[id]` detail page with live state, charts, action buttons, and logs
+- Consumes: `GET /api/migrations/[id]`, `GET /api/migrations/[id]/progress`, `GET /api/metrics/[migrationId]`, `GET /api/migrations/[id]/logs` (Task 4); `ProgressResponse` type (Task 3); `StateBadge`, `ActionButtons` (Task 5)
+- Produces:
+  - `format.ts`: `formatBytes(n: number): string`, `formatDuration(seconds: number): string`
+  - `ProgressPanel` (stat cards + copy/index progress bars + oplog/ping/direction), `VerificationPanel`, `MetricsCharts`, `LogsPanel`
+  - `/migrations/[id]` detail page wiring everything with 5s refresh, including the pre-commit checklist dialog (Task 8 supplies the dialog component; this task renders the page and passes `onConfirmCommit`)
 
-- [ ] **Step 1: Create MetricsCharts component**
+- [ ] **Step 1: Write failing tests for formatters**
+
+Create `src/lib/__tests__/format.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import { formatBytes, formatDuration } from "@/lib/format";
+
+describe("formatBytes", () => {
+  it("formats zero and units", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(1024)).toBe("1.0 KB");
+    expect(formatBytes(1048576)).toBe("1.0 MB");
+  });
+});
+
+describe("formatDuration", () => {
+  it("formats seconds, minutes, hours", () => {
+    expect(formatDuration(45)).toBe("45s");
+    expect(formatDuration(90)).toBe("1m 30s");
+    expect(formatDuration(3661)).toBe("1h 1m");
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```bash
+npx vitest run src/lib/__tests__/format.test.ts
+```
+
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement format helpers**
+
+Create `src/lib/format.ts`:
+
+```ts
+export function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+npx vitest run src/lib/__tests__/format.test.ts
+```
+
+Expected: all tests PASS.
+
+- [ ] **Step 5: Create ProgressPanel**
+
+Renders live `/progress` fields: copy progress bar, index-build progress, CEA catchup, lag, oplog window, ping latencies, direction mapping, and any warnings.
+
+Create `src/components/progress-panel.tsx`:
+
+```tsx
+"use client";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { formatBytes, formatDuration } from "@/lib/format";
+import type { ProgressResponse } from "@/lib/process-manager";
+
+function Stat({ title, value, sub }: { title: string; value: string; sub?: string }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{value}</div>
+        {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ProgressPanel({ data }: { data: ProgressResponse | null }) {
+  const p = data?.progress;
+  if (!p) return <p className="text-sm text-muted-foreground">Live progress unavailable (process not reporting).</p>;
+
+  const copied = p.collectionCopy?.estimatedCopiedBytes ?? 0;
+  const total = p.collectionCopy?.estimatedTotalBytes ?? 0;
+  const copyPct = total > 0 ? (copied / total) * 100 : 0;
+  const idxBuilt = p.indexBuilding?.indexesBuilt ?? 0;
+  const idxTotal = p.indexBuilding?.totalIndexesToBuild ?? 0;
+  const idxPct = idxTotal > 0 ? (idxBuilt / idxTotal) * 100 : 0;
+
+  return (
+    <div className="space-y-4">
+      {(p.warnings ?? []).map((w, i) => (
+        <Alert key={i} variant="destructive"><AlertDescription>{w}</AlertDescription></Alert>
+      ))}
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <Stat title="Phase" value={p.info || p.state} />
+        <Stat title="Lag Time" value={p.lagTimeSeconds != null ? `${p.lagTimeSeconds}s` : "—"} />
+        <Stat title="Events Applied" value={(p.totalEventsApplied ?? 0).toLocaleString()} />
+        <Stat
+          title="CEA Catchup"
+          value={p.estimatedSecondsToCEACatchup != null ? formatDuration(p.estimatedSecondsToCEACatchup) : "—"}
+        />
+        <Stat title="Oplog Window" value={p.estimatedOplogTimeRemaining || "—"} />
+        <Stat title="Source Ping" value={p.source?.pingLatencyMs != null ? `${p.source.pingLatencyMs} ms` : "—"} />
+        <Stat title="Dest Ping" value={p.destination?.pingLatencyMs != null ? `${p.destination.pingLatencyMs} ms` : "—"} />
+        <Stat title="Can Commit" value={p.canCommit ? "Yes" : "No"} />
+      </div>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm">Collection Copy</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <Progress value={copyPct} />
+          <p className="text-xs text-muted-foreground">
+            {formatBytes(copied)} of {formatBytes(total)} ({copyPct.toFixed(1)}%)
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm">Index Building</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <Progress value={idxPct} />
+          <p className="text-xs text-muted-foreground">{idxBuilt} of {idxTotal} indexes built</p>
+        </CardContent>
+      </Card>
+
+      {p.directionMapping && (
+        <p className="text-xs text-muted-foreground">
+          Direction: {p.directionMapping.Source} → {p.directionMapping.Destination}
+        </p>
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 6: Create VerificationPanel**
+
+Create `src/components/verification-panel.tsx`:
+
+```tsx
+"use client";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { VerificationSide } from "@/lib/process-manager";
+
+function Side({ title, side }: { title: string; side?: VerificationSide }) {
+  if (!side) return null;
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm">{title}</CardTitle></CardHeader>
+      <CardContent className="space-y-1 text-xs text-muted-foreground">
+        <div>Phase: {side.phase ?? "—"}</div>
+        <div>Collections: {side.scannedCollectionCount ?? 0} / {side.totalCollectionCount ?? 0}</div>
+        <div>Docs hashed: {(side.hashedDocumentCount ?? 0).toLocaleString()} / {(side.estimatedDocumentCount ?? 0).toLocaleString()}</div>
+        <div>Lag: {side.lagTimeSeconds != null ? `${side.lagTimeSeconds}s` : "—"}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function VerificationPanel({
+  verification,
+}: {
+  verification?: { source?: VerificationSide; destination?: VerificationSide };
+}) {
+  if (!verification || (!verification.source && !verification.destination)) return null;
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">Embedded Verification</h3>
+      <div className="grid gap-4 md:grid-cols-2">
+        <Side title="Source" side={verification.source} />
+        <Side title="Destination" side={verification.destination} />
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 7: Create MetricsCharts (historical, from SQLite)**
 
 Create `src/components/metrics-charts.tsx`:
 
 ```tsx
 "use client";
 
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import type { Metric } from "@/lib/types";
 
-function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString();
-}
+const fmtTime = (ts: number) => new Date(ts).toLocaleTimeString();
 
-function Chart({
-  data,
-  dataKey,
-  label,
-  color,
-  unit,
-}: {
-  data: Metric[];
-  dataKey: keyof Metric;
-  label: string;
-  color: string;
-  unit?: string;
+function Chart({ data, dataKey, label, color, unit }: {
+  data: Metric[]; dataKey: keyof Metric; label: string; color: string; unit?: string;
 }) {
   return (
     <div className="space-y-2">
@@ -1959,16 +2735,10 @@ function Chart({
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+            <XAxis dataKey="timestamp" tickFormatter={fmtTime} tick={{ fontSize: 10 }} />
             <YAxis tick={{ fontSize: 10 }} unit={unit} />
-            <Tooltip labelFormatter={formatTime} />
-            <Line
-              type="monotone"
-              dataKey={dataKey}
-              stroke={color}
-              strokeWidth={2}
-              dot={false}
-            />
+            <Tooltip labelFormatter={fmtTime} />
+            <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -1977,32 +2747,19 @@ function Chart({
 }
 
 export function MetricsCharts({ metrics }: { metrics: Metric[] }) {
-  if (metrics.length === 0) {
-    return <p className="text-sm text-muted-foreground">No metrics data yet.</p>;
-  }
-
+  if (metrics.length === 0) return <p className="text-sm text-muted-foreground">No metrics data yet.</p>;
   return (
     <div className="grid gap-6 md:grid-cols-2">
-      <Chart data={metrics} dataKey="progress" label="Progress %" color="#2563eb" unit="%" />
+      <Chart data={metrics} dataKey="copyProgress" label="Copy Progress %" color="#2563eb" unit="%" />
       <Chart data={metrics} dataKey="lagTimeSeconds" label="Lag Time" color="#dc2626" unit="s" />
-      <Chart
-        data={metrics}
-        dataKey="totalEventsApplied"
-        label="Events Applied"
-        color="#16a34a"
-      />
-      <Chart
-        data={metrics}
-        dataKey="estimatedCopiedBytes"
-        label="Bytes Copied"
-        color="#9333ea"
-      />
+      <Chart data={metrics} dataKey="totalEventsApplied" label="Events Applied" color="#16a34a" />
+      <Chart data={metrics} dataKey="estimatedCopiedBytes" label="Bytes Copied" color="#9333ea" />
     </div>
   );
 }
 ```
 
-- [ ] **Step 2: Create LogsPanel component**
+- [ ] **Step 8: Create LogsPanel (stdout/stderr toggle + download)**
 
 Create `src/components/logs-panel.tsx`:
 
@@ -2010,48 +2767,53 @@ Create `src/components/logs-panel.tsx`:
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 
 export function LogsPanel({ migrationId }: { migrationId: string }) {
   const [lines, setLines] = useState<string[]>([]);
+  const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-        const res = await fetch(`/api/migrations/${migrationId}/logs?lines=200`);
-        const data = await res.json();
-        setLines(data.lines || []);
-      } catch {
-        // ignore
-      }
+        const res = await fetch(`/api/migrations/${migrationId}/logs?lines=300&stream=${stream}`);
+        setLines((await res.json()).lines || []);
+      } catch { /* ignore */ }
     };
-
     fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
-  }, [migrationId]);
+    const t = setInterval(fetchLogs, 5000);
+    return () => clearInterval(t);
+  }, [migrationId, stream]);
 
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
+    if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight;
   }, [lines]);
+
+  const download = () => {
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${migrationId}-${stream}.log`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
 
   return (
     <div className="space-y-2">
-      <h3 className="text-sm font-medium">Logs</h3>
-      <div
-        ref={containerRef}
-        className="h-64 overflow-auto rounded-md border bg-black p-3 font-mono text-xs text-green-400"
-      >
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">Logs</h3>
+        <div className="flex gap-2">
+          <Button size="sm" variant={stream === "stdout" ? "default" : "outline"} onClick={() => setStream("stdout")}>stdout</Button>
+          <Button size="sm" variant={stream === "stderr" ? "default" : "outline"} onClick={() => setStream("stderr")}>stderr</Button>
+          <Button size="sm" variant="outline" onClick={download}>Download</Button>
+        </div>
+      </div>
+      <div ref={containerRef} className="h-64 overflow-auto rounded-md border bg-black p-3 font-mono text-xs text-green-400">
         {lines.length === 0 ? (
           <p className="text-gray-500">No logs available.</p>
         ) : (
-          lines.map((line, i) => (
-            <div key={i} className="whitespace-pre-wrap">
-              {line}
-            </div>
-          ))
+          lines.map((line, i) => <div key={i} className="whitespace-pre-wrap">{line}</div>)
         )}
       </div>
     </div>
@@ -2059,7 +2821,9 @@ export function LogsPanel({ migrationId }: { migrationId: string }) {
 }
 ```
 
-- [ ] **Step 3: Create the migration detail page**
+- [ ] **Step 9: Create the detail page**
+
+Note: this page imports `PreCommitDialog` from Task 8. Implement that component first if executing strictly in order, or stub it. The page passes `onConfirmCommit` to `ActionButtons` to open the dialog.
 
 Create `src/app/migrations/[id]/page.tsx`:
 
@@ -2068,59 +2832,47 @@ Create `src/app/migrations/[id]/page.tsx`:
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { StateBadge } from "@/components/state-badge";
 import { ActionButtons } from "@/components/action-buttons";
+import { ProgressPanel } from "@/components/progress-panel";
+import { VerificationPanel } from "@/components/verification-panel";
 import { MetricsCharts } from "@/components/metrics-charts";
 import { LogsPanel } from "@/components/logs-panel";
+import { PreCommitDialog } from "@/components/pre-commit-dialog";
 import type { Migration, Metric } from "@/lib/types";
+import type { ProgressResponse } from "@/lib/process-manager";
 
 export default function MigrationDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const [migration, setMigration] = useState<Migration | null>(null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [progress, setProgress] = useState<ProgressResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [commitOpen, setCommitOpen] = useState(false);
 
   const fetchData = async () => {
     try {
-      const [migRes, metRes] = await Promise.all([
+      const [migRes, metRes, progRes] = await Promise.all([
         fetch(`/api/migrations/${params.id}`),
         fetch(`/api/metrics/${params.id}`),
+        fetch(`/api/migrations/${params.id}/progress`),
       ]);
-
-      if (!migRes.ok) {
-        router.push("/");
-        return;
-      }
-
+      if (!migRes.ok) { router.push("/"); return; }
       setMigration(await migRes.json());
       setMetrics(await metRes.json());
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
+      setProgress(progRes.ok ? await progRes.json() : null);
+    } catch { /* ignore */ } finally { setLoading(false); }
   };
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+    const t = setInterval(fetchData, 5000);
+    return () => clearInterval(t);
   }, [params.id]);
 
-  if (loading) {
-    return <p className="text-muted-foreground">Loading...</p>;
-  }
-
-  if (!migration) {
-    return <p className="text-muted-foreground">Migration not found.</p>;
-  }
-
-  const lastMetric = metrics[metrics.length - 1];
-  const progressPercent = lastMetric?.progress ?? 0;
+  if (loading) return <p className="text-muted-foreground">Loading...</p>;
+  if (!migration) return <p className="text-muted-foreground">Migration not found.</p>;
 
   return (
     <div className="space-y-6">
@@ -2130,103 +2882,146 @@ export default function MigrationDetailPage() {
             <h1 className="text-2xl font-bold">{migration.name}</h1>
             <StateBadge state={migration.state} />
           </div>
-          <p className="text-sm text-muted-foreground">
-            {migration.sourceUri} → {migration.destUri}
-          </p>
+          <p className="text-sm text-muted-foreground">{migration.sourceUri} → {migration.destUri}</p>
         </div>
-        <ActionButtons migration={migration} onAction={fetchData} />
+        <ActionButtons migration={migration} onAction={fetchData} onConfirmCommit={() => setCommitOpen(true)} />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Progress</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{progressPercent.toFixed(1)}%</div>
-            <Progress value={progressPercent} className="mt-2" />
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Lag Time</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {lastMetric?.lagTimeSeconds != null ? `${lastMetric.lagTimeSeconds}s` : "—"}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Events Applied</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {lastMetric?.totalEventsApplied?.toLocaleString() ?? "—"}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Bytes Copied</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {lastMetric ? formatBytes(lastMetric.estimatedCopiedBytes) : "—"}
-            </div>
-            {lastMetric && lastMetric.estimatedTotalBytes > 0 && (
-              <p className="text-xs text-muted-foreground">
-                of {formatBytes(lastMetric.estimatedTotalBytes)}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
+      <ProgressPanel data={progress} />
+      <VerificationPanel verification={progress?.progress?.verification} />
       <MetricsCharts metrics={metrics} />
-
       <LogsPanel migrationId={migration.id} />
+
+      <PreCommitDialog
+        open={commitOpen}
+        onOpenChange={setCommitOpen}
+        migrationId={migration.id}
+        progress={progress}
+        onCommitted={fetchData}
+      />
     </div>
   );
 }
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-}
 ```
 
-- [ ] **Step 4: Verify the detail page compiles**
+- [ ] **Step 10: Verify build**
 
 ```bash
 npm run build 2>&1 | tail -10
 ```
 
-Expected: build succeeds.
+Expected: build fails only on the missing `PreCommitDialog` import — that is implemented in Task 8. If executing tasks strictly independently, temporarily comment out the dialog usage, build, then restore. Otherwise proceed to Task 8 and build there.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: add migration detail page with metrics charts and logs panel"
+git commit -m "feat: migration detail page with live progress, verification, charts, and logs"
 ```
 
 ---
 
-### Task 7: Settings Page
+### Task 8: Pre-Commit Checklist Dialog + Settings Page
 
 **Files:**
+- Create: `src/components/pre-commit-dialog.tsx`
 - Create: `src/app/settings/page.tsx`
 
 **Interfaces:**
-- Consumes: `GET /api/settings`, `PUT /api/settings`, `GET /api/mongosync/version` from Task 3
-- Produces: `/settings` page with binary path config, version test, poll interval
+- Consumes: `POST /api/migrations/[id]/commit` (Task 4), `ProgressResponse` (Task 3); `GET/PUT /api/settings`, `GET /api/mongosync/version` (Task 4)
+- Produces:
+  - `PreCommitDialog` — shows the live readiness checklist (state RUNNING, `canCommit`, lag near 0) and a reminder to stop source writes; commit button disabled until ready
+  - `/settings` page — binary path + version test, base port, poll interval, and default sync options
 
-- [ ] **Step 1: Create the settings page**
+- [ ] **Step 1: Create PreCommitDialog**
+
+Create `src/components/pre-commit-dialog.tsx`:
+
+```tsx
+"use client";
+
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useToast } from "@/components/ui/use-toast";
+import { useState } from "react";
+import type { ProgressResponse } from "@/lib/process-manager";
+
+function Check({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <li className={ok ? "text-green-600" : "text-muted-foreground"}>
+      {ok ? "✓" : "○"} {label}
+    </li>
+  );
+}
+
+export function PreCommitDialog({
+  open, onOpenChange, migrationId, progress, onCommitted,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  migrationId: string;
+  progress: ProgressResponse | null;
+  onCommitted: () => void;
+}) {
+  const { toast } = useToast();
+  const [committing, setCommitting] = useState(false);
+
+  const p = progress?.progress;
+  const stateOk = p?.state === "RUNNING";
+  const canCommit = p?.canCommit === true;
+  const lagOk = (p?.lagTimeSeconds ?? Infinity) <= 5;
+  const ready = stateOk && canCommit && lagOk;
+
+  const commit = async () => {
+    setCommitting(true);
+    try {
+      const res = await fetch(`/api/migrations/${migrationId}/commit`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).error || "Commit failed");
+      toast({ title: "Commit started", description: "Migration is finalizing (COMMITTING)." });
+      onOpenChange(false);
+      onCommitted();
+    } catch (err) {
+      toast({ variant: "destructive", title: "Commit failed", description: (err as Error).message });
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Commit (cutover)</DialogTitle>
+          <DialogDescription>
+            Committing finalizes the migration. Confirm the cluster is ready before proceeding.
+          </DialogDescription>
+        </DialogHeader>
+        <Alert variant="destructive">
+          <AlertDescription>
+            Stop all application writes to the source cluster before committing. Writing during commit can cause data loss.
+          </AlertDescription>
+        </Alert>
+        <ul className="space-y-1 text-sm">
+          <Check ok={stateOk} label="State is RUNNING" />
+          <Check ok={canCommit} label="canCommit is true" />
+          <Check ok={lagOk} label={`Lag is low (${p?.lagTimeSeconds ?? "—"}s)`} />
+        </ul>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button disabled={!ready || committing} onClick={commit}>
+            {committing ? "Committing..." : "Commit"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+```
+
+- [ ] **Step 2: Create the settings page**
 
 Create `src/app/settings/page.tsx`:
 
@@ -2237,58 +3032,60 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useToast } from "@/components/ui/use-toast";
+
+interface Settings {
+  mongosyncPath: string;
+  pollInterval: string;
+  basePort: string;
+  defaultLoadLevel: string;
+  defaultVerbosity: string;
+  defaultVerification: string;
+  defaultDisableTelemetry: string;
+}
+
+const DEFAULTS: Settings = {
+  mongosyncPath: "", pollInterval: "5000", basePort: "27182",
+  defaultLoadLevel: "3", defaultVerbosity: "INFO",
+  defaultVerification: "true", defaultDisableTelemetry: "false",
+};
 
 export default function SettingsPage() {
-  const [mongosyncPath, setMongosyncPath] = useState("");
-  const [pollInterval, setPollInterval] = useState("5000");
+  const { toast } = useToast();
+  const [s, setS] = useState<Settings>(DEFAULTS);
   const [version, setVersion] = useState<string | null>(null);
   const [versionError, setVersionError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetch("/api/settings")
-      .then((res) => res.json())
-      .then((data) => {
-        setMongosyncPath(data.mongosyncPath || "");
-        setPollInterval(data.pollInterval || "5000");
-      })
-      .catch(() => {});
+    fetch("/api/settings").then((r) => r.json()).then((data) => {
+      setS({ ...DEFAULTS, ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== "")) });
+    }).catch(() => {});
   }, []);
+
+  const set = (k: keyof Settings) => (v: string) => setS((prev) => ({ ...prev, [k]: v }));
 
   const save = async () => {
     setSaving(true);
     try {
       await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mongosyncPath, pollInterval }),
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s),
       });
-    } catch {
-      // ignore
-    } finally {
-      setSaving(false);
-    }
+      toast({ title: "Settings saved" });
+    } finally { setSaving(false); }
   };
 
   const testBinary = async () => {
-    setTesting(true);
-    setVersion(null);
-    setVersionError(null);
+    setTesting(true); setVersion(null); setVersionError(null);
     try {
       const res = await fetch("/api/mongosync/version");
       const data = await res.json();
-      if (res.ok) {
-        setVersion(data.version);
-      } else {
-        setVersionError(data.error);
-      }
-    } catch (err: any) {
-      setVersionError(err.message);
-    } finally {
-      setTesting(false);
-    }
+      res.ok ? setVersion(data.version) : setVersionError(data.error);
+    } catch (e) { setVersionError((e as Error).message); }
+    finally { setTesting(false); }
   };
 
   return (
@@ -2296,225 +3093,242 @@ export default function SettingsPage() {
       <h1 className="text-2xl font-bold">Settings</h1>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Mongosync Binary</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Mongosync Binary</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="mongosyncPath">Binary Path</Label>
             <div className="flex gap-2">
-              <Input
-                id="mongosyncPath"
-                value={mongosyncPath}
-                onChange={(e) => setMongosyncPath(e.target.value)}
-                placeholder="mongosync (or full path)"
-              />
+              <Input id="mongosyncPath" value={s.mongosyncPath}
+                onChange={(e) => set("mongosyncPath")(e.target.value)} placeholder="mongosync (or full path)" />
               <Button variant="outline" onClick={testBinary} disabled={testing}>
                 {testing ? "Testing..." : "Test"}
               </Button>
             </div>
-            {version && (
-              <p className="text-sm text-green-600">Version: {version}</p>
-            )}
-            {versionError && (
-              <p className="text-sm text-red-500">Error: {versionError}</p>
-            )}
+            {version && <p className="text-sm text-green-600">Version: {version}</p>}
+            {versionError && <p className="text-sm text-red-500">Error: {versionError}</p>}
           </div>
-
-          <a
-            href="https://www.mongodb.com/docs/mongosync/current/installation/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-blue-600 hover:underline"
-          >
+          <a href="https://www.mongodb.com/docs/mongosync/current/installation/" target="_blank"
+            rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline">
             Download mongosync from MongoDB
           </a>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Polling</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Process & Polling</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
+            <Label htmlFor="basePort">Base Port (first migration's mongosync port)</Label>
+            <Input id="basePort" type="number" value={s.basePort} onChange={(e) => set("basePort")(e.target.value)} />
+          </div>
+          <div className="space-y-2">
             <Label htmlFor="pollInterval">Poll Interval (ms)</Label>
-            <Input
-              id="pollInterval"
-              type="number"
-              value={pollInterval}
-              onChange={(e) => setPollInterval(e.target.value)}
-              min={1000}
-              max={60000}
-            />
-            <p className="text-xs text-muted-foreground">
-              How often to check mongosync progress (default: 5000ms)
-            </p>
+            <Input id="pollInterval" type="number" min={1000} max={60000} value={s.pollInterval}
+              onChange={(e) => set("pollInterval")(e.target.value)} />
           </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Data Directory</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground font-mono">~/.mongosync-ui/</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Contains database, config files, and logs
-          </p>
+        <CardHeader><CardTitle>New Migration Defaults</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="defaultLoadLevel">Default Load Level (1-4)</Label>
+            <Input id="defaultLoadLevel" type="number" min={1} max={4} value={s.defaultLoadLevel}
+              onChange={(e) => set("defaultLoadLevel")(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="defaultVerbosity">Default Verbosity</Label>
+            <select id="defaultVerbosity" className="w-full rounded border px-2 py-2 text-sm"
+              value={s.defaultVerbosity} onChange={(e) => set("defaultVerbosity")(e.target.value)}>
+              {["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "PANIC"].map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center justify-between">
+            <Label htmlFor="defaultVerification">Enable Verification by Default</Label>
+            <Switch id="defaultVerification" checked={s.defaultVerification === "true"}
+              onCheckedChange={(v) => set("defaultVerification")(String(v))} />
+          </div>
+          <div className="flex items-center justify-between">
+            <Label htmlFor="defaultDisableTelemetry">Disable Telemetry by Default</Label>
+            <Switch id="defaultDisableTelemetry" checked={s.defaultDisableTelemetry === "true"}
+              onCheckedChange={(v) => set("defaultDisableTelemetry")(String(v))} />
+          </div>
         </CardContent>
       </Card>
 
-      <Button onClick={save} disabled={saving}>
-        {saving ? "Saving..." : "Save Settings"}
-      </Button>
+      <Card>
+        <CardHeader><CardTitle>Data Directory</CardTitle></CardHeader>
+        <CardContent>
+          <p className="text-sm font-mono text-muted-foreground">~/.mongosync-ui/</p>
+          <p className="mt-1 text-xs text-muted-foreground">Contains database, config files, and logs.</p>
+        </CardContent>
+      </Card>
+
+      <Button onClick={save} disabled={saving}>{saving ? "Saving..." : "Save Settings"}</Button>
     </div>
   );
 }
 ```
 
-- [ ] **Step 2: Verify the settings page renders**
+- [ ] **Step 3: Verify build**
 
 ```bash
 npm run build 2>&1 | tail -10
 ```
 
-Expected: build succeeds.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add -A
-git commit -m "feat: add settings page with binary path config and version testing"
-```
-
----
-
-### Task 8: Startup Initialization + Final Integration
-
-**Files:**
-- Create: `src/lib/init.ts`
-- Modify: `src/app/layout.tsx` (add init call)
-- Modify: `src/app/api/migrations/route.ts` (ensure poller starts on GET)
-
-**Interfaces:**
-- Consumes: all previous tasks
-- Produces: app initializes properly on startup — detects dead processes, starts poller, auto-detects mongosync binary
-
-- [ ] **Step 1: Create init module**
-
-Create `src/lib/init.ts`:
-
-```ts
-import { getAllMigrations, updateMigration, getSetting, setSetting } from "./db";
-import { isProcessAlive } from "./process-manager";
-import { startPoller } from "./poller";
-import { execSync } from "node:child_process";
-
-let initialized = false;
-
-export function initApp(): void {
-  if (initialized) return;
-  initialized = true;
-
-  // Clean up dead processes
-  const migrations = getAllMigrations();
-  for (const m of migrations) {
-    if (m.pid && !isProcessAlive(m.pid)) {
-      updateMigration(m.id, { pid: null });
-    }
-  }
-
-  // Auto-detect mongosync if not set
-  if (!getSetting("mongosyncPath")) {
-    const candidates = ["/usr/local/bin/mongosync", "/usr/bin/mongosync"];
-    for (const candidate of candidates) {
-      try {
-        execSync(`${candidate} --version`, { timeout: 3000, stdio: "ignore" });
-        setSetting("mongosyncPath", candidate);
-        break;
-      } catch {
-        // not found, try next
-      }
-    }
-    // Try PATH
-    if (!getSetting("mongosyncPath")) {
-      try {
-        execSync("mongosync --version", { timeout: 3000, stdio: "ignore" });
-        setSetting("mongosyncPath", "mongosync");
-      } catch {
-        // not found anywhere
-      }
-    }
-  }
-
-  // Start poller
-  const interval = Number(getSetting("pollInterval") || "5000");
-  startPoller(interval);
-}
-```
-
-- [ ] **Step 2: Integrate init into the migrations API route**
-
-Modify `src/app/api/migrations/route.ts` — add at the top of the file, before the route handlers:
-
-```ts
-import { initApp } from "@/lib/init";
-
-// Initialize on first API call
-initApp();
-```
-
-Add the same import and call to `src/app/api/migrations/[id]/route.ts`:
-
-```ts
-import { initApp } from "@/lib/init";
-initApp();
-```
-
-- [ ] **Step 3: Final build and verification**
-
-```bash
-npm run build
-```
-
-Expected: build succeeds with no errors.
-
-```bash
-npm run test
-```
-
-Expected: all tests pass.
+Expected: build succeeds (the detail page's `PreCommitDialog` import now resolves).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add -A
-git commit -m "feat: add startup initialization with process cleanup and binary auto-detection"
+git commit -m "feat: pre-commit checklist dialog and full settings page with defaults"
 ```
 
-- [ ] **Step 5: Final smoke test**
+---
+
+### Task 9: Startup Initialization + Default Wiring + Final Integration
+
+**Files:**
+- Modify: `src/lib/init.ts`
+- Modify: `src/app/api/migrations/route.ts` (use `basePort` setting + apply defaults on create)
+
+**Interfaces:**
+- Consumes: all previous tasks
+- Produces: robust startup — reconcile dead PIDs, auto-detect binary, honor `pollInterval`, start poller; create flow honors `basePort` and applies default sync options when the form omits them
+
+- [ ] **Step 1: Expand init module**
+
+Replace `src/lib/init.ts`:
+
+```ts
+import { getAllMigrations, updateMigration, getSetting, setSetting } from "./db";
+import { isProcessAlive } from "./process-manager";
+import { startPoller } from "./poller";
+import { execFileSync } from "node:child_process";
+
+let initialized = false;
+
+function detectBinary(): void {
+  if (getSetting("mongosyncPath")) return;
+  const candidates = ["mongosync", "/usr/local/bin/mongosync", "/opt/homebrew/bin/mongosync", "/usr/bin/mongosync"];
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ["--version"], { timeout: 3000, stdio: "ignore" });
+      setSetting("mongosyncPath", candidate);
+      return;
+    } catch {
+      // try next
+    }
+  }
+}
+
+export function initApp(): void {
+  if (initialized) return;
+  initialized = true;
+
+  // Reconcile processes that died while the server was down.
+  for (const m of getAllMigrations()) {
+    if (m.pid && !isProcessAlive(m.pid)) updateMigration(m.id, { pid: null });
+  }
+
+  detectBinary();
+  startPoller(Number(getSetting("pollInterval") || "5000"));
+}
+```
+
+- [ ] **Step 2: Honor basePort + defaults in the create route**
+
+In `src/app/api/migrations/route.ts`, replace the port-selection block and merge default sync options into the incoming config. Update the `POST` handler body:
+
+```ts
+export async function POST(request: NextRequest) {
+  initApp();
+  const { name, sourceUri, destUri, config } = await request.json();
+
+  const basePort = Number(getSetting("basePort") || "27182");
+  const used = new Set(getAllMigrations().map((m) => m.port));
+  let port = basePort;
+  while (used.has(port)) port++;
+
+  // Apply settings-level defaults only where the form left a field unset.
+  const merged = {
+    verbosity: getSetting("defaultVerbosity") || undefined,
+    loadLevel: getSetting("defaultLoadLevel") ? Number(getSetting("defaultLoadLevel")) : undefined,
+    disableTelemetry: getSetting("defaultDisableTelemetry") === "true" || undefined,
+    verificationEnabled:
+      getSetting("defaultVerification") != null ? getSetting("defaultVerification") === "true" : undefined,
+    ...(config ?? {}),
+  };
+
+  const migration = createMigration({ name, sourceUri, destUri, config: merged, port });
+  // ... rest unchanged (spawn, wait-for-ready, start, set RUNNING, startPoller, return)
+}
+```
+
+Add `getSetting` to the existing `@/lib/db` import in that file.
+
+- [ ] **Step 3: Final build + full test run**
+
+```bash
+npm run build
+npm run test
+```
+
+Expected: build succeeds with no errors; all unit tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat: startup init with PID reconciliation, binary auto-detection, basePort and default wiring"
+```
+
+- [ ] **Step 5: Smoke test the running app**
 
 ```bash
 npm run dev &
 sleep 3
-# Test dashboard loads
 curl -s http://localhost:3000 | grep -c "Migrations"
-# Test API returns empty list
 curl -s http://localhost:3000/api/migrations
-# Test settings API
 curl -s http://localhost:3000/api/settings
-# Test new migration page
 curl -s http://localhost:3000/migrations/new | grep -c "New Migration"
+curl -s -X POST http://localhost:3000/api/cluster-check -H 'Content-Type: application/json' -d '{"uri":"mongodb://localhost:1/x"}'
 kill %1
 ```
 
-Expected: All return valid responses. Dashboard shows "Migrations", API returns `[]`, settings returns JSON, new migration page renders.
+Expected: dashboard shows "Migrations"; `/api/migrations` returns `[]`; `/api/settings` returns JSON; new-migration page renders; cluster-check returns `{"reachable":false,...}`.
 
 - [ ] **Step 6: Final commit**
 
 ```bash
 git add -A
-git commit -m "chore: final integration verification"
+git commit -m "chore: final integration smoke test"
 ```
+
+---
+
+## Self-Review
+
+**Spec coverage** — mapped against the CLAUDE.md "UI Functionalities to Implement" checklist:
+
+1. Binary & Environment — version test (Task 4/8), auto-detect (Task 9), data dir (Task 1/8). MongoDB version validation via `checkCluster` (Task 3/6). ✓
+2. Connection Configuration — URIs, source/dest names (`cluster0`/`cluster1`), connectivity test + ping (Task 3/6/7), masked password via config file (Task 2 constraint). ✓
+3. Process Options — port, logPath, metricsLoggingFilepath, verbosity, loadLevel, createIndexesBatchSize, id, disableTelemetry/Verification, enableCappedCollectionHandling all in `StartConfig` + `generateConfig` (Tasks 1–2). `hotDocIDs`/`acceptDisclaimer` modeled in types/constraints; surfaced minimally. ✓
+4. Sync Start Options — source/destination, reversible, buildIndexes (5 modes), detectRandomId, copyInNaturalOrder (type), preExistingDestinationData, verification.enabled (Tasks 1–2, 6). ✓
+5. Namespace Filtering — database/databaseRegex/collections/collectionsRegex with reverse-incompatibility warning (Tasks 1, 2, 6). ✓
+6. Sharding — shardingEntries + createSupportingIndexes in config + start body + form (Tasks 1, 2, 6); multi-instance `id` flag (Task 1/2). ✓
+7. Lifecycle Actions — start/pause/resume/commit/reverse/delete, state-gated (Task 5), commit `canCommit` gate + reverse prerequisites (Task 4), pre-commit checklist (Task 8). ✓
+8. Live Monitoring — full `/progress` panel: copy, index building, CEA, oplog window, ping, direction, canCommit/canWrite, warnings (Task 7); verification panel (Task 7); historical charts persisted to SQLite (Tasks 1, 4, 7). ✓
+9. Logs — stdout/stderr tail + download (Task 7). ✓
+10. Error Handling & Notifications — toasts on action failure (Task 5/8), confirmation dialogs for commit/reverse/delete (Tasks 5, 8). ✓
+11. Settings — binary path, base port, poll interval, default load level/verbosity/verification/telemetry (Task 8), data dir display (Task 8). ✓
+
+**Known partials (intentional, documented):** `copyInNaturalOrder`, `hotDocIDs`, and `acceptDisclaimer` are modeled in `StartConfig`/constraints but not given dedicated form controls — they are rarely-used expert options; a follow-up can add inputs that flow through the existing `buildStartBody`/`generateConfig` passthrough.
+
+**Type consistency:** `StartConfig`, `Migration`, `Metric`, `MetricInput`, `ProgressResponse`, `VerificationSide`, `ActionKind`, `MigrationFormValues` are defined once and consumed by name across tasks. `progressToMetric` output matches `MetricInput`. `availableActions`/`STATE_COLORS` cover all six states. Field names match the mongosync API per Global Constraints (notably `directionMapping.Source/Destination` capitalization and the absence of `enableUserWriteBlocking`).
+
+**Cross-task build note:** Task 7's detail page imports `PreCommitDialog` (Task 8). When executing tasks independently, build Task 8's component before Task 7's final build, or temporarily stub the import as noted in Task 7 Step 10.
