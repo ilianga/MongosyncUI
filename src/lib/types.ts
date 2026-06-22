@@ -9,6 +9,28 @@ export const MONGOSYNC_STATES = [
 
 export type MongosyncState = (typeof MONGOSYNC_STATES)[number];
 
+export type SupervisionStatus =
+  | "running"
+  | "restarting"
+  | "crash_looping"
+  | "stopped"
+  | "unsupervised";
+
+export interface WrapperStatus {
+  attempt: number;
+  lastExitCode: number | null;
+  lastStartAt: number;
+  state: "running" | "crash_looping";
+}
+
+export interface SupervisionConfig {
+  mode: "supervised" | "legacy";
+  backoffCapSec: number;
+  crashLoopMax: number;
+  crashLoopWindowSec: number;
+  hungTicks: number;
+}
+
 export type BuildIndexesMode =
   | "afterDataCopy"
   | "beforeDataCopy"
@@ -66,6 +88,11 @@ export interface Migration {
   state: MongosyncState;
   port: number;
   pid: number | null;
+  desiredRunning: number; // 0 | 1 — SQLite has no bool
+  supervisionStatus: SupervisionStatus;
+  restartCount: number;
+  lastExitCode: number | null;
+  lastRestartAt: number | null;
   createdAt: number;
   updatedAt: number;
 }

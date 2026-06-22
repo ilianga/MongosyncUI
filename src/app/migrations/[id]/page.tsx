@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { StateBadge } from "@/components/state-badge";
+import { SupervisionBadge } from "@/components/supervision-badge";
 import { ActionButtons } from "@/components/action-buttons";
+import { Button } from "@/components/ui/button";
 import { ProgressPanel } from "@/components/progress-panel";
 import { VerificationPanel } from "@/components/verification-panel";
 import { MetricsCharts } from "@/components/metrics-charts";
@@ -58,6 +60,7 @@ export default function MigrationDetailPage() {
             <div className="flex items-center gap-2.5">
               <h1 className="text-xl font-semibold truncate">{migration.name}</h1>
               <StateBadge state={migration.state} />
+              <SupervisionBadge status={migration.supervisionStatus} />
             </div>
             <p className="font-mono text-xs text-muted-foreground truncate">
               {sourceLabel}
@@ -77,6 +80,20 @@ export default function MigrationDetailPage() {
 
       {/* Body */}
       <div className="space-y-6 animate-fade-in pt-6">
+        {migration.supervisionStatus === "crash_looping" && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 space-y-2">
+            <p className="text-sm font-medium text-destructive">
+              mongosync is crash-looping (last exit code {migration.lastExitCode ?? "?"}, {migration.restartCount} restarts).
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Check the logs below for the cause. Once resolved, retry supervision.
+            </p>
+            <Button variant="outline" size="sm" onClick={async () => {
+              await fetch(`/api/migrations/${migration.id}/retry`, { method: "POST" });
+              router.refresh();
+            }}>Retry</Button>
+          </div>
+        )}
         <ProgressPanel data={progress} />
         <VerificationPanel verification={progress?.progress?.verification} />
         <MetricsCharts metrics={metrics} />

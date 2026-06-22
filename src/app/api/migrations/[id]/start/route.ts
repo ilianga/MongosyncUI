@@ -9,7 +9,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
     await sendCommand(migration.port, "start", buildStartBody(migration));
-    updateMigration(id, { state: "RUNNING" });
+    updateMigration(id, { state: "RUNNING", desiredRunning: 1, supervisionStatus: "running" });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 500 });

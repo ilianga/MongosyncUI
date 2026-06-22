@@ -8,7 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "supervisor:install": "tsx scripts/supervisor-cli.mjs install",
+    "supervisor:uninstall": "tsx scripts/supervisor-cli.mjs uninstall",
+    "supervisor:status": "tsx scripts/supervisor-cli.mjs status"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -39,9 +42,10 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
-    "tailwindcss": "^4",
-    "typescript": "^5",
     "shadcn": "^4.11.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.4",
+    "typescript": "^5",
     "vitest": "^4.1.9"
   }
 }

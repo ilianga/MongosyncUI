@@ -4,7 +4,13 @@ import path from "path";
 import type { Migration } from "./types";
 import { generateConfig } from "./config-generator";
 import { getLogDir } from "./paths";
-import { getSetting, updateMigration } from "./db";
+import { updateMigration } from "./db";
+import { resolveMongosyncBin, getMongosyncPath } from "./resolve-bin";
+import { hasTmux } from "./tmux";
+import { getSupervisionConfig } from "./supervision-config";
+import { superviseStart, superviseStop } from "./supervisor";
+
+export { resolveMongosyncBin } from "./resolve-bin";
 
 // Mirrors GET /api/v1/progress. All numeric fields optional — mongosync omits
 // them depending on phase. The poller normalizes to the Metric shape.
@@ -50,27 +56,6 @@ export interface VerificationSide {
   lagTimeSeconds?: number;
 }
 
-// Resolve the configured path to the actual mongosync executable. Tolerant of a
-// common mistake: pointing at the bin/ DIRECTORY (or a path with a trailing
-// slash) instead of the binary file — in that case we look for `mongosync`
-// inside it. Falls back to "mongosync" on PATH when unset.
-export function resolveMongosyncBin(): string {
-  const configured = getSetting("mongosyncPath")?.trim();
-  if (!configured) return "mongosync";
-  try {
-    if (configured.endsWith("/") || (fs.existsSync(configured) && fs.statSync(configured).isDirectory())) {
-      return path.join(configured, "mongosync");
-    }
-  } catch {
-    // stat failed — fall through and use the configured value as-is
-  }
-  return configured;
-}
-
-function getMongosyncPath(): string {
-  return resolveMongosyncBin();
-}
-
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -80,7 +65,7 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-export function spawnMongosync(migration: Migration): number {
+function legacySpawn(migration: Migration): number {
   const configPath = generateConfig(migration);
   const logDir = getLogDir(migration.id);
   const outFd = fs.openSync(path.join(logDir, "stdout.log"), "a");
@@ -94,18 +79,27 @@ export function spawnMongosync(migration: Migration): number {
   fs.closeSync(errFd);
   if (!child.pid) throw new Error("Failed to spawn mongosync (binary not found or not executable?)");
   child.unref();
-  const pid = child.pid;
-  updateMigration(migration.id, { pid });
-  return pid;
+  updateMigration(migration.id, { pid: child.pid, supervisionStatus: "unsupervised" });
+  return child.pid;
+}
+
+export function spawnMongosync(migration: Migration): number {
+  const supervised = getSupervisionConfig().mode === "supervised" && hasTmux();
+  if (supervised) {
+    superviseStart(migration);
+    return 0; // pid is informational only under supervision; identity is the session name
+  }
+  return legacySpawn(migration);
 }
 
 export function killMongosync(migration: Migration): void {
+  const supervised = getSupervisionConfig().mode === "supervised" && hasTmux();
+  if (supervised) {
+    superviseStop(migration.id, { intentional: true });
+    return;
+  }
   if (migration.pid && isProcessAlive(migration.pid)) {
-    try {
-      process.kill(migration.pid, "SIGTERM");
-    } catch {
-      // already gone
-    }
+    try { process.kill(migration.pid, "SIGTERM"); } catch { /* already gone */ }
   }
   updateMigration(migration.id, { pid: null });
 }

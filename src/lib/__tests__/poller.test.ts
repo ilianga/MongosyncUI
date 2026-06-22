@@ -1,5 +1,90 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import path from "path";
+import fs from "fs";
+import os from "os";
 import type { ProgressResponse } from "@/lib/process-manager";
+import { getSupervisionConfig } from "@/lib/supervision-config";
+
+const supervisor = { reconcile: vi.fn(), readWrapperStatus: vi.fn(() => null) };
+const tmux = { sessionName: (id: string) => `msync-${id}`, sessionExists: vi.fn(() => true), killSession: vi.fn() };
+const pm = { fetchProgress: vi.fn(), sendCommand: vi.fn(), isProcessAlive: vi.fn(() => true) };
+
+vi.mock("@/lib/supervisor", () => supervisor);
+vi.mock("@/lib/tmux", () => tmux);
+vi.mock("@/lib/process-manager", () => pm);
+vi.mock("@/lib/config-generator", () => ({ buildStartBody: () => ({ source: "cluster0", destination: "cluster1" }) }));
+
+let dir: string, prevEnv: string | undefined;
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "mongosync-ui-test-"));
+  prevEnv = process.env.MONGOSYNC_UI_DIR; process.env.MONGOSYNC_UI_DIR = dir;
+  vi.resetModules();
+  [supervisor.reconcile, pm.fetchProgress, pm.sendCommand, tmux.killSession].forEach((f) => f.mockReset());
+  tmux.sessionExists.mockReturnValue(true);
+});
+afterEach(() => { process.env.MONGOSYNC_UI_DIR = prevEnv; fs.rmSync(dir, { recursive: true, force: true }); });
+
+async function withRunningMigration() {
+  const db = await import("@/lib/db");
+  const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+  db.updateMigration(m.id, { state: "RUNNING", desiredRunning: 1 });
+  return { db, id: m.id };
+}
+
+describe("pollOnce health monitoring", () => {
+  it("always reconciles first", async () => {
+    await withRunningMigration();
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "RUNNING", canCommit: false, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    expect(supervisor.reconcile).toHaveBeenCalled();
+  });
+
+  it("restarts a hung migration after hungTicks unreachable probes", async () => {
+    const { id } = await withRunningMigration();
+    pm.fetchProgress.mockRejectedValue(new Error("ECONNREFUSED"));
+    const { pollOnce } = await import("@/lib/poller");
+    // Drive exactly hungTicks iterations so the test stays correct if the default changes.
+    const { hungTicks } = getSupervisionConfig();
+    for (let i = 0; i < hungTicks; i++) await pollOnce();
+    expect(tmux.killSession).toHaveBeenCalledWith(`msync-${id}`);
+  });
+
+  it("re-issues /start when a supervised RUNNING migration comes up IDLE (resume)", async () => {
+    // state must be RUNNING in the DB — that is the guard that allows resume.
+    await withRunningMigration(); // sets state: "RUNNING", desiredRunning: 1
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "IDLE", canCommit: false, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    expect(pm.sendCommand).toHaveBeenCalledWith(27182, "start", expect.anything());
+  });
+
+  it("does NOT re-issue /start when a supervised PAUSED migration comes up IDLE after crash", async () => {
+    // A user-paused migration (state PAUSED, desiredRunning 1) must not be auto-resumed.
+    const db = await import("@/lib/db");
+    const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+    db.updateMigration(m.id, { state: "PAUSED", desiredRunning: 1 });
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "IDLE", canCommit: false, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    expect(pm.sendCommand).not.toHaveBeenCalledWith(27182, "start", expect.anything());
+  });
+
+  it("clears pid for a legacy (unsupervised) migration whose process is dead", async () => {
+    const db = await import("@/lib/db");
+    const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+    // Legacy: desiredRunning=0, state RUNNING (active states polled), pid set but process dead.
+    db.updateMigration(m.id, { state: "RUNNING", desiredRunning: 0, pid: 999999999 });
+    pm.isProcessAlive.mockReturnValue(false);
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    // pid should be cleared; fetchProgress should NOT have been called.
+    expect(pm.fetchProgress).not.toHaveBeenCalled();
+    expect(db.getMigration(m.id)!.pid).toBeNull();
+  });
+});
+
+// ── Original progressToMetric tests (kept intact) ────────────────────────────
 
 async function load() {
   return await import("@/lib/poller");
