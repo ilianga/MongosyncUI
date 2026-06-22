@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration } from "@/lib/db";
+import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration, getSetting } from "@/lib/db";
 import { spawnMongosync, sendCommand, killMongosync } from "@/lib/process-manager";
 import { buildStartBody } from "@/lib/config-generator";
 import { startPoller } from "@/lib/poller";
@@ -14,11 +14,22 @@ export async function POST(request: NextRequest) {
   initApp();
   const { name, sourceUri, destUri, config } = await request.json();
 
+  const basePort = Number(getSetting("basePort") || "27182");
   const used = new Set(getAllMigrations().map((m) => m.port));
-  let port = 27182;
+  let port = basePort;
   while (used.has(port)) port++;
 
-  const migration = createMigration({ name, sourceUri, destUri, config: config ?? {}, port });
+  // Apply settings-level defaults only where the form left a field unset.
+  const merged = {
+    verbosity: getSetting("defaultVerbosity") || undefined,
+    loadLevel: getSetting("defaultLoadLevel") ? Number(getSetting("defaultLoadLevel")) : undefined,
+    disableTelemetry: getSetting("defaultDisableTelemetry") === "true" || undefined,
+    verificationEnabled:
+      getSetting("defaultVerification") != null ? getSetting("defaultVerification") === "true" : undefined,
+    ...(config ?? {}),
+  };
+
+  const migration = createMigration({ name, sourceUri, destUri, config: merged, port });
 
   try {
     spawnMongosync(migration);
