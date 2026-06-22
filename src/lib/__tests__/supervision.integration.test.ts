@@ -194,35 +194,85 @@ d("supervision E2E (real tmux)", () => {
     // Start — creates the real tmux session.
     sup.superviseStart(db.getMigration(m.id)!);
 
-    // Verify the session is up.
-    expect(spawnSync("tmux", ["has-session", "-t", `msync-${m.id}`]).status).toBe(0);
+    // Wait until the session is actually up (bounded, since tmux session creation is async).
+    const sessionUp = await pollUntil(
+      () => spawnSync("tmux", ["has-session", "-t", `msync-${m.id}`]).status === 0,
+      5_000,
+      100
+    );
+    expect(sessionUp).toBe(true);
     expect(db.getMigration(m.id)!.desiredRunning).toBe(1);
 
-    // Simulate server restart: clear in-memory module cache (the db connection
-    // was open in-process, so we keep it; what we're testing is that reconcile
-    // identifies an already-running session by name and does NOT spawn a second one).
-    // Reset modules so supervisor gets a fresh import (no in-memory session cache).
+    // Capture session identity BEFORE the simulated restart.
+    // We use `session_created` (a Unix timestamp tmux records when it created the
+    // session) as an immutable identity marker — re-adoption must leave it unchanged.
+    // As a secondary check we also capture the pane PID.
+    const sessionName = `msync-${m.id}`;
+
+    const createdBefore = spawnSync(
+      "tmux",
+      ["list-sessions", "-F", "#{session_name} #{session_created}"],
+      { encoding: "utf-8" }
+    ).stdout
+      .split("\n")
+      .find((l) => l.startsWith(sessionName + " "))
+      ?.split(" ")[1];
+    expect(createdBefore).toBeTruthy(); // guard: session must be listed
+
+    const panePidBefore = spawnSync(
+      "tmux",
+      ["list-panes", "-t", sessionName, "-F", "#{pane_pid}"],
+      { encoding: "utf-8" }
+    ).stdout.trim();
+    expect(panePidBefore).toBeTruthy();
+
+    // Count sessions for this id before reconcile (must be exactly 1).
+    const countSessions = (): number =>
+      spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf-8" })
+        .stdout.split("\n")
+        .filter((s) => s === sessionName).length;
+    expect(countSessions()).toBe(1);
+
+    // Simulate server restart: reset module cache so supervisor re-imports with no
+    // in-memory state (mirrors what happens when the Next.js server process restarts).
     vi.resetModules();
     const db2 = await import("@/lib/db");
     const sup2 = await import("@/lib/supervisor");
 
     // The session already exists in tmux; desiredRunning=1 persists in SQLite.
-    // reconcile() must NOT kill and re-create the session.
-    const startSessionSpy = vi.spyOn(
-      await import("@/lib/tmux"),
-      "startSession"
-    );
-
-    // Reconcile: should see the existing session and leave it alone.
+    // reconcile() must NOT kill and re-create the session — it must re-adopt by name.
     sup2.reconcile();
 
-    // The session must still be alive.
-    expect(spawnSync("tmux", ["has-session", "-t", `msync-${m.id}`]).status).toBe(0);
+    // --- Primary assertions: real tmux state, not a spy ---
 
-    // reconcile must NOT have created a second session.
-    expect(startSessionSpy).not.toHaveBeenCalled();
+    // 1. Session still exists after reconcile.
+    expect(spawnSync("tmux", ["has-session", "-t", sessionName]).status).toBe(0);
 
-    // The migration row should be marked running (not restarting) since the session existed.
+    // 2. Exactly ONE session for this id — no duplicate was created.
+    expect(countSessions()).toBe(1);
+
+    // 3. session_created is UNCHANGED — proves the original session was re-adopted,
+    //    not killed and replaced with a new one.
+    const createdAfter = spawnSync(
+      "tmux",
+      ["list-sessions", "-F", "#{session_name} #{session_created}"],
+      { encoding: "utf-8" }
+    ).stdout
+      .split("\n")
+      .find((l) => l.startsWith(sessionName + " "))
+      ?.split(" ")[1];
+    expect(createdAfter).toBe(createdBefore);
+
+    // 4. Pane PID is UNCHANGED — the same process is running inside the session.
+    const panePidAfter = spawnSync(
+      "tmux",
+      ["list-panes", "-t", sessionName, "-F", "#{pane_pid}"],
+      { encoding: "utf-8" }
+    ).stdout.trim();
+    expect(panePidAfter).toBe(panePidBefore);
+
+    // 5. DB row reflects running state (not "restarting" — that would mean reconcile
+    //    thought the session was missing and restarted it from scratch).
     const after = db2.getMigration(m.id)!;
     expect(after.supervisionStatus).toBe("running");
   });
