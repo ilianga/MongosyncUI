@@ -12,7 +12,7 @@ const tmux = {
 };
 vi.mock("@/lib/tmux", () => tmux);
 vi.mock("@/lib/config-generator", () => ({ generateConfig: () => "/tmp/cfg.yaml" }));
-vi.mock("@/lib/process-manager", () => ({ resolveMongosyncBin: () => "/usr/bin/mongosync" }));
+vi.mock("@/lib/resolve-bin", () => ({ resolveMongosyncBin: () => "/usr/bin/mongosync", getMongosyncPath: () => "/usr/bin/mongosync" }));
 
 let testDir: string;
 let originalEnv: string | undefined;

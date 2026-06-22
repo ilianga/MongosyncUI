@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs";
 import { getAllMigrations, getMigration, updateMigration } from "./db";
 import { generateConfig } from "./config-generator";
-import { resolveMongosyncBin } from "./process-manager";
+import { resolveMongosyncBin } from "./resolve-bin";
 import { getLogDir, getDataDir } from "./paths";
 import { getSupervisionConfig } from "./supervision-config";
 import { sessionName, sessionExists, startSession, killSession, listMsyncSessions } from "./tmux";
