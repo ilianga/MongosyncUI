@@ -47,3 +47,36 @@ describe("formValuesToConfig", () => {
     expect(formValuesToConfig(base).verificationEnabled).toBe(true);
   });
 });
+
+describe("formValuesToConfig — shard-key parsing", () => {
+  const withShard = (shardKey: string) =>
+    formValuesToConfig({
+      ...base,
+      shardingEntries: [{ database: "mydb", collection: "mycol", shardKey }],
+    });
+
+  it("drops empty parts from blank or trailing-comma shard keys", () => {
+    const cfg = withShard("field1:1,");
+    const key = cfg.sharding!.shardingEntries[0].shardCollection.key;
+    expect(key).toHaveLength(1);
+    expect(key[0]).toEqual({ field1: 1 });
+  });
+
+  it("maps 'hashed' direction to the string 'hashed'", () => {
+    const cfg = withShard("_id:hashed");
+    const key = cfg.sharding!.shardingEntries[0].shardCollection.key;
+    expect(key).toEqual([{ _id: "hashed" }]);
+  });
+
+  it("maps a plain field (no direction) to 1", () => {
+    const cfg = withShard("region");
+    const key = cfg.sharding!.shardingEntries[0].shardCollection.key;
+    expect(key).toEqual([{ region: 1 }]);
+  });
+
+  it("maps '-1' direction to -1", () => {
+    const cfg = withShard("ts:-1");
+    const key = cfg.sharding!.shardingEntries[0].shardCollection.key;
+    expect(key).toEqual([{ ts: -1 }]);
+  });
+});

@@ -66,16 +66,18 @@ export function isProcessAlive(pid: number): boolean {
 export function spawnMongosync(migration: Migration): number {
   const configPath = generateConfig(migration);
   const logDir = getLogDir(migration.id);
+  const outFd = fs.openSync(path.join(logDir, "stdout.log"), "a");
+  const errFd = fs.openSync(path.join(logDir, "stderr.log"), "a");
   const child = spawn(getMongosyncPath(), ["--config", configPath], {
     detached: true,
-    stdio: [
-      "ignore",
-      fs.openSync(path.join(logDir, "stdout.log"), "a"),
-      fs.openSync(path.join(logDir, "stderr.log"), "a"),
-    ],
+    stdio: ["ignore", outFd, errFd],
   });
+  // Close parent's copies of the FDs — child already inherited them.
+  fs.closeSync(outFd);
+  fs.closeSync(errFd);
+  if (!child.pid) throw new Error("Failed to spawn mongosync (binary not found or not executable?)");
   child.unref();
-  const pid = child.pid!;
+  const pid = child.pid;
   updateMigration(migration.id, { pid });
   return pid;
 }

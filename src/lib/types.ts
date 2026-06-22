@@ -29,7 +29,7 @@ export interface NamespaceFilter {
 export interface ShardingEntry {
   database: string;
   collection: string;
-  shardCollection: { key: Record<string, 1 | "hashed">[] };
+  shardCollection: { key: Record<string, 1 | -1 | "hashed">[] };
 }
 
 // Everything the user configures for a sync, persisted as JSON in Migration.config.

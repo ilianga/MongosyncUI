@@ -68,10 +68,15 @@ export function formValuesToConfig(values: MigrationFormValues): StartConfig {
         database: e.database,
         collection: e.collection,
         shardCollection: {
-          key: e.shardKey.split(",").map((part) => {
-            const [field, dir] = part.split(":").map((s) => s.trim());
-            return { [field]: dir === "hashed" ? ("hashed" as const) : (1 as const) };
-          }),
+          key: e.shardKey
+            .split(",")
+            .map((part) => {
+              const [field, dir] = part.split(":").map((s) => s.trim());
+              if (!field) return null;
+              const val: 1 | -1 | "hashed" = dir === "hashed" ? "hashed" : dir === "-1" ? -1 : 1;
+              return { [field]: val };
+            })
+            .filter((x): x is Record<string, 1 | -1 | "hashed"> => x !== null),
         },
       })),
     };
