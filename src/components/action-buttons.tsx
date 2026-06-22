@@ -32,7 +32,6 @@ export function ActionButtons({
     setLoading(action);
     try {
       if (action === "delete") {
-        if (!confirm(`Delete migration "${migration.name}"? This kills its mongosync process.`)) return;
         const res = await fetch(`/api/migrations/${migration.id}`, { method: "DELETE" });
         if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
       } else {
@@ -50,8 +49,14 @@ export function ActionButtons({
 
   const onClick = (action: ActionKind) => {
     if (action === "commit" && onConfirmCommit) return onConfirmCommit();
-    if ((action === "commit" || action === "reverse") && !onConfirmCommit) {
-      if (!confirm(`${LABELS[action]} this migration? This step is hard to undo.`)) return;
+    if (action === "commit") {
+      if (!confirm("Commit this migration? This step is hard to undo.")) return;
+    }
+    if (action === "reverse") {
+      if (!confirm("Reverse this migration? This step is hard to undo.")) return;
+    }
+    if (action === "delete") {
+      if (!confirm(`Delete migration "${migration.name}"? This kills its mongosync process.`)) return;
     }
     void run(action);
   };
