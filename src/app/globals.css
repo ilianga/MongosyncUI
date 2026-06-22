@@ -49,72 +49,74 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* MongoDB LeafyGreen — light */
+  --background: #F9FBFA;
+  --foreground: #001E2B;
+  --card: #FFFFFF;
+  --card-foreground: #001E2B;
+  --popover: #FFFFFF;
+  --popover-foreground: #001E2B;
+  --primary: #00684A;
+  --primary-foreground: #FFFFFF;
+  --secondary: #E8EDEB;
+  --secondary-foreground: #001E2B;
+  --muted: #E8EDEB;
+  --muted-foreground: #5C6C75;
+  --accent: #E3FCF7;
+  --accent-foreground: #00684A;
+  --destructive: #DB3030;
+  --border: #E8EDEB;
+  --input: #E8EDEB;
+  --ring: #00684A;
+  --chart-1: #00684A;
+  --chart-2: #016BF8;
+  --chart-3: #B45AF2;
+  --chart-4: #944F01;
+  --chart-5: #00A35C;
+  --radius: 0.5rem;
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #3D4F58;
+  --sidebar-primary: #00684A;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F9FBFA;
+  --sidebar-accent-foreground: #00684A;
+  --sidebar-border: #E8EDEB;
+  --sidebar-ring: #00684A;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* MongoDB LeafyGreen — dark (control room) */
+  --background: #001E2B;
+  --foreground: #F9FBFA;
+  --card: #112733;
+  --card-foreground: #F9FBFA;
+  --popover: #112733;
+  --popover-foreground: #F9FBFA;
+  --primary: #00ED64;
+  --primary-foreground: #001E2B;
+  --secondary: #1C2D38;
+  --secondary-foreground: #E8EDEB;
+  --muted: #1C2D38;
+  --muted-foreground: #889397;
+  --accent: #023430;
+  --accent-foreground: #C0FAE6;
+  --destructive: #FF6960;
+  --border: #3D4F58;
+  --input: #3D4F58;
+  --ring: #00ED64;
+  --chart-1: #00ED64;
+  --chart-2: #016BF8;
+  --chart-3: #B45AF2;
+  --chart-4: #FFC010;
+  --chart-5: #00A35C;
+  --sidebar: #06212E;
+  --sidebar-foreground: #C1C7C6;
+  --sidebar-primary: #00ED64;
+  --sidebar-primary-foreground: #001E2B;
+  --sidebar-accent: #112733;
+  --sidebar-accent-foreground: #E3FCF7;
+  --sidebar-border: #1C2D38;
+  --sidebar-ring: #00ED64;
 }
 
 @layer base {
@@ -127,4 +129,19 @@
   html {
     @apply font-sans;
   }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+  50% { opacity: 0.65; box-shadow: 0 0 0 3px color-mix(in oklab, currentColor 28%, transparent); }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+.animate-fade-in { animation: fade-in 0.22s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-dot, .animate-fade-in { animation: none; }
 }
