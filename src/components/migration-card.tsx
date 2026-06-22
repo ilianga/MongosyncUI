@@ -2,6 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StateBadge } from "./state-badge";
+import { SupervisionBadge } from "./supervision-badge";
 import { ActionButtons } from "./action-buttons";
 import { cn } from "@/lib/utils";
 import type { Migration } from "@/lib/types";
@@ -21,7 +22,10 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
               {migration.name}
             </CardTitle>
           </Link>
-          <StateBadge state={migration.state} />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <SupervisionBadge status={migration.supervisionStatus} />
+            <StateBadge state={migration.state} />
+          </div>
         </div>
         <div className="flex items-center gap-1 font-mono text-sm text-muted-foreground min-w-0 overflow-hidden">
           <span className="truncate min-w-0">{migration.sourceUri}</span>

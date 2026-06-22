@@ -131,4 +131,19 @@ describe("supervisor", () => {
     expect(tmux.startSession).not.toHaveBeenCalled();
     expect(tmux.killSession).not.toHaveBeenCalled();
   });
+
+  it("retrySupervision resets crash-loop state and restarts", async () => {
+    const { db, sup } = await setup();
+    const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+    db.updateMigration(m.id, { desiredRunning: 1, supervisionStatus: "crash_looping", restartCount: 5 });
+    const sPath = sup.statusPath(m.id);
+    fs.mkdirSync(path.dirname(sPath), { recursive: true });
+    fs.writeFileSync(sPath, JSON.stringify({ attempt: 5, lastExitCode: 7, lastStartAt: 1, state: "crash_looping" }));
+    tmux.sessionExists.mockReturnValue(false);
+    sup.retrySupervision(m.id);
+    expect(db.getMigration(m.id)!.restartCount).toBe(0);
+    expect(db.getMigration(m.id)!.supervisionStatus).toBe("running");
+    expect(fs.existsSync(sup.statusPath(m.id))).toBe(false);
+    expect(tmux.startSession).toHaveBeenCalled();
+  });
 });

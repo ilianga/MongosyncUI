@@ -82,6 +82,13 @@ export function superviseStop(id: string, opts: { intentional?: boolean } = {}):
   updateMigration(id, { supervisionStatus: "stopped" });
 }
 
+export function retrySupervision(id: string): void {
+  fs.rmSync(statusPath(id), { force: true });
+  updateMigration(id, { restartCount: 0, lastExitCode: null, supervisionStatus: "running", desiredRunning: 1 });
+  const fresh = getMigration(id);
+  if (fresh) superviseStart(fresh);
+}
+
 // Idempotent: drive every migration toward its desired state. Safe to call repeatedly
 // (each poll tick, on startup, after reboot). This is the single recovery path.
 export function reconcile(): void {
