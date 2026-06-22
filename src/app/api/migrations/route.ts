@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllMigrations, createMigration, getMigration, updateMigration } from "@/lib/db";
-import { spawnMongosync, sendCommand } from "@/lib/process-manager";
+import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration } from "@/lib/db";
+import { spawnMongosync, sendCommand, killMongosync } from "@/lib/process-manager";
 import { buildStartBody } from "@/lib/config-generator";
 import { startPoller } from "@/lib/poller";
 import { initApp } from "@/lib/init";
@@ -33,6 +33,9 @@ export async function POST(request: NextRequest) {
       await new Promise((r) => setTimeout(r, 500));
     }
     if (!ready) {
+      const latest = getMigration(migration.id);
+      if (latest) killMongosync(latest);
+      deleteMigration(migration.id);
       return NextResponse.json({ error: "mongosync failed to start within 15s" }, { status: 500 });
     }
 
@@ -41,6 +44,9 @@ export async function POST(request: NextRequest) {
     startPoller();
     return NextResponse.json(getMigration(migration.id), { status: 201 });
   } catch (error) {
+    const latest = getMigration(migration.id);
+    if (latest) killMongosync(latest);
+    deleteMigration(migration.id);
     return NextResponse.json({ error: (error as Error).message }, { status: 500 });
   }
 }
