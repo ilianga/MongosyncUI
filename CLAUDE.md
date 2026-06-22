@@ -80,7 +80,7 @@ npm run lint         # Lint with ESLint
 ## Supervision
 
 Process state and lifecycle are stored in `~/.mongosync-ui/supervision/<id>/`:
-- `status.json` — current wrapper status (PID, uptime, restarts, crash-loop state)
+- `status.json` — current wrapper status: `attempt` (restart count), `lastExitCode`, `lastStartAt`, and `state` (`running` | `crash_looping`)
 - `stop` — sentinel file; presence signals intentional shutdown
 
 Supervision tuning (all in Settings):
