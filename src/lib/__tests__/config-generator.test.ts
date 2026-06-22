@@ -34,6 +34,11 @@ function migrationWith(config: StartConfig): Migration {
     state: "IDLE",
     port: 27183,
     pid: null,
+    desiredRunning: 0,
+    supervisionStatus: "stopped",
+    restartCount: 0,
+    lastExitCode: null,
+    lastRestartAt: null,
     createdAt: 1,
     updatedAt: 1,
   };

@@ -43,7 +43,24 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_metrics_migration ON metrics(migrationId, timestamp);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
+  migrateSchema(db);
   return db;
+}
+
+// Additive, idempotent column migrations. CREATE TABLE IF NOT EXISTS never alters an
+// existing table, so new columns must be added explicitly and guarded against re-adding.
+function migrateSchema(database: Database.Database): void {
+  const cols = new Set(
+    (database.prepare("PRAGMA table_info(migrations)").all() as { name: string }[]).map((c) => c.name)
+  );
+  const add = (name: string, ddl: string) => {
+    if (!cols.has(name)) database.exec(`ALTER TABLE migrations ADD COLUMN ${ddl}`);
+  };
+  add("desiredRunning", "desiredRunning INTEGER NOT NULL DEFAULT 0");
+  add("supervisionStatus", "supervisionStatus TEXT NOT NULL DEFAULT 'stopped'");
+  add("restartCount", "restartCount INTEGER NOT NULL DEFAULT 0");
+  add("lastExitCode", "lastExitCode INTEGER");
+  add("lastRestartAt", "lastRestartAt INTEGER");
 }
 
 export function createMigration(input: CreateMigrationInput): Migration {
@@ -57,13 +74,20 @@ export function createMigration(input: CreateMigrationInput): Migration {
     state: "IDLE",
     port: input.port,
     pid: null,
+    desiredRunning: 0,
+    supervisionStatus: "stopped",
+    restartCount: 0,
+    lastExitCode: null,
+    lastRestartAt: null,
     createdAt: now,
     updatedAt: now,
   };
   getDb()
     .prepare(
-      `INSERT INTO migrations (id, name, sourceUri, destUri, config, state, port, pid, createdAt, updatedAt)
-       VALUES (@id, @name, @sourceUri, @destUri, @config, @state, @port, @pid, @createdAt, @updatedAt)`
+      `INSERT INTO migrations (id, name, sourceUri, destUri, config, state, port, pid,
+         desiredRunning, supervisionStatus, restartCount, lastExitCode, lastRestartAt, createdAt, updatedAt)
+       VALUES (@id, @name, @sourceUri, @destUri, @config, @state, @port, @pid,
+         @desiredRunning, @supervisionStatus, @restartCount, @lastExitCode, @lastRestartAt, @createdAt, @updatedAt)`
     )
     .run(migration);
   return migration;

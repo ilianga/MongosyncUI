@@ -89,4 +89,29 @@ describe("db", () => {
     setSetting("mongosyncPath", "/opt/mongosync");
     expect(getSetting("mongosyncPath")).toBe("/opt/mongosync");
   });
+
+  it("creates migrations with supervision defaults", async () => {
+    const { createMigration } = await loadDb();
+    const m = createMigration({
+      name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182,
+    });
+    expect(m.desiredRunning).toBe(0);
+    expect(m.supervisionStatus).toBe("stopped");
+    expect(m.restartCount).toBe(0);
+    expect(m.lastExitCode).toBeNull();
+    expect(m.lastRestartAt).toBeNull();
+  });
+
+  it("persists supervision field updates", async () => {
+    const { createMigration, updateMigration, getMigration } = await loadDb();
+    const m = createMigration({
+      name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182,
+    });
+    updateMigration(m.id, { desiredRunning: 1, supervisionStatus: "running", restartCount: 2, lastExitCode: 9 });
+    const u = getMigration(m.id)!;
+    expect(u.desiredRunning).toBe(1);
+    expect(u.supervisionStatus).toBe("running");
+    expect(u.restartCount).toBe(2);
+    expect(u.lastExitCode).toBe(9);
+  });
 });
