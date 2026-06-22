@@ -9,6 +9,11 @@ const KEYS = [
   "defaultVerbosity",
   "defaultVerification",
   "defaultDisableTelemetry",
+  "supervisionMode",
+  "backoffCapSec",
+  "crashLoopMax",
+  "crashLoopWindowSec",
+  "hungTicks",
 ];
 
 export async function GET() {

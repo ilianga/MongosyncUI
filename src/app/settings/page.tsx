@@ -17,12 +17,19 @@ interface Settings {
   defaultVerbosity: string;
   defaultVerification: string;
   defaultDisableTelemetry: string;
+  supervisionMode: string;
+  backoffCapSec: string;
+  crashLoopMax: string;
+  crashLoopWindowSec: string;
+  hungTicks: string;
 }
 
 const DEFAULTS: Settings = {
   mongosyncPath: "", pollInterval: "5000", basePort: "27182",
   defaultLoadLevel: "3", defaultVerbosity: "INFO",
   defaultVerification: "true", defaultDisableTelemetry: "false",
+  supervisionMode: "supervised", backoffCapSec: "60", crashLoopMax: "5",
+  crashLoopWindowSec: "300", hungTicks: "6",
 };
 
 const selectClass =
@@ -34,6 +41,7 @@ export default function SettingsPage() {
   const [versionError, setVersionError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [boot, setBoot] = useState<{ installed: boolean; path: string; tmux: boolean; platform: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then((data) => {
@@ -41,7 +49,24 @@ export default function SettingsPage() {
     }).catch(() => {});
   }, []);
 
+  useEffect(() => { fetch("/api/supervision").then((r) => r.json()).then(setBoot).catch(() => {}); }, []);
+
   const set = (k: keyof Settings) => (v: string) => setS((prev) => ({ ...prev, [k]: v }));
+
+  const toggleBoot = async (action: "install" | "uninstall") => {
+    try {
+      const res = await fetch("/api/supervision", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      toast.success(action === "install" ? "Boot service installed" : "Boot service removed", {
+        description: data.followUp ? `Run: ${data.followUp}` : undefined, duration: 12000,
+      });
+      const r = await fetch("/api/supervision"); setBoot(await r.json());
+    } catch (e) { toast.error("Failed", { description: (e as Error).message }); }
+  };
 
   const testBinary = async () => {
     setTesting(true); setVersion(null); setVersionError(null);
@@ -171,6 +196,65 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm font-mono text-muted-foreground">~/.mongosync-ui/</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Supervision &amp; Fault Tolerance</CardTitle>
+            <CardDescription>
+              How mongosync instances are kept alive. Supervised mode runs each in a tmux session
+              with automatic restart on crash or hang.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="supervisionMode">Mode</Label>
+              <select id="supervisionMode" className={selectClass}
+                value={s.supervisionMode} onChange={(e) => set("supervisionMode")(e.target.value)}>
+                <option value="supervised">Supervised (tmux + auto-restart)</option>
+                <option value="legacy">Legacy (detached, no auto-restart)</option>
+              </select>
+              {boot && !boot.tmux && (
+                <p className="text-sm text-destructive">
+                  tmux not found — supervised mode falls back to legacy. Install tmux to enable fault tolerance.
+                </p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="hungTicks">Hung threshold (poll ticks)</Label>
+                <Input id="hungTicks" type="number" min={2} value={s.hungTicks}
+                  onChange={(e) => set("hungTicks")(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="backoffCapSec">Restart backoff cap (s)</Label>
+                <Input id="backoffCapSec" type="number" min={1} value={s.backoffCapSec}
+                  onChange={(e) => set("backoffCapSec")(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="crashLoopMax">Crash-loop cap (restarts)</Label>
+                <Input id="crashLoopMax" type="number" min={1} value={s.crashLoopMax}
+                  onChange={(e) => set("crashLoopMax")(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="crashLoopWindowSec">Crash-loop window (s)</Label>
+                <Input id="crashLoopWindowSec" type="number" min={10} value={s.crashLoopWindowSec}
+                  onChange={(e) => set("crashLoopWindowSec")(e.target.value)} />
+              </div>
+            </div>
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <p className="text-sm font-medium">Start at boot</p>
+                <p className="text-xs text-muted-foreground">
+                  {boot?.installed ? "Installed" : "Not installed"}
+                  {boot ? ` · ${boot.platform === "darwin" ? "launchd" : "systemd --user"}` : ""}
+                </p>
+              </div>
+              {boot?.installed
+                ? <Button variant="outline" onClick={() => toggleBoot("uninstall")}>Remove boot service</Button>
+                : <Button variant="outline" onClick={() => toggleBoot("install")}>Install boot service</Button>}
+            </div>
           </CardContent>
         </Card>
 
