@@ -48,15 +48,36 @@ describe("supervisor", () => {
     expect(db.getMigration(m.id)!.supervisionStatus).toBe("running");
   });
 
-  it("superviseStop(intentional) writes the stop sentinel before killing the session", async () => {
+  it("superviseStop(intentional) writes the stop sentinel BEFORE killing the session", async () => {
     const { db, sup } = await setup();
     const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
     db.updateMigration(m.id, { desiredRunning: 1 });
+
+    // Track call order: spy on fs.writeFileSync and killSession to assert sentinel is written first.
+    const callOrder: string[] = [];
+    const sentinelPath = sup.stopSentinelPath(m.id);
+    const origWriteFileSync = fs.writeFileSync.bind(fs);
+    const writeFileSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((...args: Parameters<typeof fs.writeFileSync>) => {
+      if (args[0] === sentinelPath) callOrder.push("writeSentinel");
+      return origWriteFileSync(...args);
+    });
+    tmux.killSession.mockImplementation(() => { callOrder.push("killSession"); });
+
     sup.superviseStop(m.id, { intentional: true });
-    expect(fs.existsSync(sup.stopSentinelPath(m.id))).toBe(true);
+
+    writeFileSpy.mockRestore();
+
+    expect(fs.existsSync(sentinelPath)).toBe(true);
     expect(tmux.killSession).toHaveBeenCalledWith(`msync-${m.id}`);
     expect(db.getMigration(m.id)!.desiredRunning).toBe(0);
     expect(db.getMigration(m.id)!.supervisionStatus).toBe("stopped");
+
+    // Critical ordering assertion: sentinel must be written before killSession.
+    const sentinelIdx = callOrder.indexOf("writeSentinel");
+    const killIdx = callOrder.indexOf("killSession");
+    expect(sentinelIdx).toBeGreaterThanOrEqual(0);
+    expect(killIdx).toBeGreaterThanOrEqual(0);
+    expect(sentinelIdx).toBeLessThan(killIdx);
   });
 
   it("reconcile recreates a missing session for a desired-running migration", async () => {
@@ -73,7 +94,9 @@ describe("supervisor", () => {
     const { db, sup } = await setup();
     const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
     db.updateMigration(m.id, { desiredRunning: 1 });
-    fs.writeFileSync(sup.statusPath(m.id), JSON.stringify({ attempt: 5, lastExitCode: 7, lastStartAt: 1, state: "crash_looping" }));
+    const sPath = sup.statusPath(m.id);
+    fs.mkdirSync(path.dirname(sPath), { recursive: true });
+    fs.writeFileSync(sPath, JSON.stringify({ attempt: 5, lastExitCode: 7, lastStartAt: 1, state: "crash_looping" }));
     tmux.sessionExists.mockReturnValue(true);
     sup.reconcile();
     expect(db.getMigration(m.id)!.supervisionStatus).toBe("crash_looping");
@@ -96,5 +119,16 @@ describe("supervisor", () => {
     tmux.sessionExists.mockReturnValue(false);
     sup.reconcile();
     expect(tmux.killSession).toHaveBeenCalledWith("msync-ghost");
+  });
+
+  it("reconcile leaves a desiredRunning=1 migration untouched when its session already exists and status is 'running'", async () => {
+    const { db, sup } = await setup();
+    const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+    db.updateMigration(m.id, { desiredRunning: 1, supervisionStatus: "running" });
+    // Session exists — reconcile should neither start nor kill anything.
+    tmux.sessionExists.mockReturnValue(true);
+    sup.reconcile();
+    expect(tmux.startSession).not.toHaveBeenCalled();
+    expect(tmux.killSession).not.toHaveBeenCalled();
   });
 });

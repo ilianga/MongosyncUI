@@ -11,9 +11,13 @@ import type { Migration, WrapperStatus } from "./types";
 const WRAPPER = path.resolve(process.cwd(), "scripts/mongosync-respawn.sh");
 
 function supervisionDir(id: string): string {
-  const dir = path.join(getDataDir(), "supervision", id);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  return path.join(getDataDir(), "supervision", id);
+}
+
+// Create the supervision directory on disk. Call this only at write sites
+// (superviseStart before writing the sentinel, superviseStop before writing sentinel).
+function ensureSupervisionDir(id: string): void {
+  fs.mkdirSync(supervisionDir(id), { recursive: true });
 }
 
 export function statusPath(id: string): string {
@@ -54,6 +58,8 @@ export function readWrapperStatus(id: string): WrapperStatus | null {
 
 export function superviseStart(migration: Migration): void {
   const name = sessionName(migration.id);
+  // Ensure directory exists before any file writes for this migration.
+  ensureSupervisionDir(migration.id);
   // Clear any stale stop sentinel so the wrapper does not immediately exit.
   fs.rmSync(stopSentinelPath(migration.id), { force: true });
   if (!sessionExists(name)) startSession(name, buildWrapperCommand(migration));
@@ -62,9 +68,14 @@ export function superviseStart(migration: Migration): void {
 
 export function superviseStop(id: string, opts: { intentional?: boolean } = {}): void {
   const name = sessionName(id);
+  // Default/intentional path: set desiredRunning=0, write the stop sentinel, then kill —
+  // so the wrapper never respawns and reconcile() will not restart it on the next tick.
+  // Passing { intentional: false } force-kills the session while leaving desiredRunning=1,
+  // so reconcile() WILL restart it — used by hung-restart paths.
   if (opts.intentional !== false) {
     // Order matters: intent → sentinel → kill. A crash mid-way self-heals via reconcile.
     updateMigration(id, { desiredRunning: 0 });
+    ensureSupervisionDir(id);
     fs.writeFileSync(stopSentinelPath(id), "");
   }
   killSession(name);
@@ -92,8 +103,13 @@ export function reconcile(): void {
       }
       if (!sessionExists(name)) {
         const fresh = getMigration(m.id);
-        if (fresh) superviseStart(fresh);
-        updateMigration(m.id, { supervisionStatus: "restarting", lastRestartAt: Date.now() });
+        if (fresh) {
+          superviseStart(fresh);
+          // superviseStart sets status "running"; override to "restarting" so the UI
+          // can show that this was an automatic recovery rather than an initial start.
+          updateMigration(m.id, { supervisionStatus: "restarting", lastRestartAt: Date.now() });
+        }
+        // If fresh === undefined the migration was deleted mid-reconcile — skip silently.
       } else if (m.supervisionStatus !== "running") {
         updateMigration(m.id, { supervisionStatus: "running" });
       }
