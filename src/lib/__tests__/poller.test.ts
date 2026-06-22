@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import os from "os";
 import type { ProgressResponse } from "@/lib/process-manager";
+import { getSupervisionConfig } from "@/lib/supervision-config";
 
 const supervisor = { reconcile: vi.fn(), readWrapperStatus: vi.fn(() => null) };
 const tmux = { sessionName: (id: string) => `msync-${id}`, sessionExists: vi.fn(() => true), killSession: vi.fn() };
@@ -43,16 +44,43 @@ describe("pollOnce health monitoring", () => {
     const { id } = await withRunningMigration();
     pm.fetchProgress.mockRejectedValue(new Error("ECONNREFUSED"));
     const { pollOnce } = await import("@/lib/poller");
-    for (let i = 0; i < 6; i++) await pollOnce(); // default hungTicks = 6
+    // Drive exactly hungTicks iterations so the test stays correct if the default changes.
+    const { hungTicks } = getSupervisionConfig();
+    for (let i = 0; i < hungTicks; i++) await pollOnce();
     expect(tmux.killSession).toHaveBeenCalledWith(`msync-${id}`);
   });
 
-  it("re-issues /start when a supervised migration comes up IDLE (resume)", async () => {
-    await withRunningMigration();
+  it("re-issues /start when a supervised RUNNING migration comes up IDLE (resume)", async () => {
+    // state must be RUNNING in the DB — that is the guard that allows resume.
+    await withRunningMigration(); // sets state: "RUNNING", desiredRunning: 1
     pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "IDLE", canCommit: false, canWrite: false } });
     const { pollOnce } = await import("@/lib/poller");
     await pollOnce();
     expect(pm.sendCommand).toHaveBeenCalledWith(27182, "start", expect.anything());
+  });
+
+  it("does NOT re-issue /start when a supervised PAUSED migration comes up IDLE after crash", async () => {
+    // A user-paused migration (state PAUSED, desiredRunning 1) must not be auto-resumed.
+    const db = await import("@/lib/db");
+    const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+    db.updateMigration(m.id, { state: "PAUSED", desiredRunning: 1 });
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "IDLE", canCommit: false, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    expect(pm.sendCommand).not.toHaveBeenCalledWith(27182, "start", expect.anything());
+  });
+
+  it("clears pid for a legacy (unsupervised) migration whose process is dead", async () => {
+    const db = await import("@/lib/db");
+    const m = db.createMigration({ name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182 });
+    // Legacy: desiredRunning=0, state RUNNING (active states polled), pid set but process dead.
+    db.updateMigration(m.id, { state: "RUNNING", desiredRunning: 0, pid: 999999999 });
+    pm.isProcessAlive.mockReturnValue(false);
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    // pid should be cleared; fetchProgress should NOT have been called.
+    expect(pm.fetchProgress).not.toHaveBeenCalled();
+    expect(db.getMigration(m.id)!.pid).toBeNull();
   });
 });
 

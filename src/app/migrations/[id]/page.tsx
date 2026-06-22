@@ -90,7 +90,7 @@ export default function MigrationDetailPage() {
             </p>
             <Button variant="outline" size="sm" onClick={async () => {
               await fetch(`/api/migrations/${migration.id}/retry`, { method: "POST" });
-              location.reload();
+              router.refresh();
             }}>Retry</Button>
           </div>
         )}

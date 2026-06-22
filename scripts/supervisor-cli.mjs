@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// Usage: node scripts/supervisor-cli.mjs <install|uninstall|status>
+// Usage: npm run supervisor:install|uninstall|status
+//        (or: npx tsx scripts/supervisor-cli.mjs <install|uninstall|status>)
+// NOTE: this file imports a .ts source file and must be run via tsx — plain
+// `node scripts/supervisor-cli.mjs` will fail with a TypeScript parse error.
 import { installBootService, uninstallBootService, bootServiceStatus } from "../src/lib/os-unit.ts";
 
 const cmd = process.argv[2];

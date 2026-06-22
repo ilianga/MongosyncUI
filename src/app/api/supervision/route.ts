@@ -7,8 +7,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { action } = (await req.json()) as { action?: string };
   try {
+    const { action } = (await req.json()) as { action?: string };
     if (action === "install") return NextResponse.json(installBootService());
     if (action === "uninstall") return NextResponse.json(uninstallBootService());
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });

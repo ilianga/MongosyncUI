@@ -1,5 +1,5 @@
 import { getAllMigrations, updateMigration, insertMetric } from "./db";
-import { fetchProgress, sendCommand } from "./process-manager";
+import { fetchProgress, sendCommand, isProcessAlive } from "./process-manager";
 import type { ProgressResponse } from "./process-manager";
 import { reconcile } from "./supervisor";
 import { sessionName, sessionExists, killSession } from "./tmux";
@@ -50,7 +50,12 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
     // where it left off. Source: CLAUDE.md §"POST /resume" — "Resumes from PAUSED using
     // state stored on the destination." The same destination-persisted state is consulted
     // by /start on a freshly-started binary, so the behaviour extends to full restarts.
-    if (m.desiredRunning && liveState && RESUME_STATES.includes(liveState)) {
+    //
+    // Guard: only re-drive /start when the DB state is RUNNING. A PAUSED migration
+    // (desiredRunning=1 but the user deliberately paused it) or a COMMITTED migration
+    // (post-cutover, kept supervised so /reverse still works) must NOT be auto-resumed
+    // after a crash+respawn — their DB state correctly reflects that intent.
+    if (m.desiredRunning && m.state === "RUNNING" && liveState && RESUME_STATES.includes(liveState)) {
       try { await sendCommand(m.port, "start", buildStartBody(m)); } catch { /* next tick retries */ }
       return;
     }
@@ -78,6 +83,14 @@ export async function pollOnce(): Promise<void> {
   const cfg = getSupervisionConfig();
   for (const m of getAllMigrations()) {
     if (!m.desiredRunning && !ACTIVE_STATES.includes(m.state)) continue;
+
+    // Legacy / unsupervised migration: if the PID we stored is no longer alive, clear it
+    // and skip probing — there is no process to query and no supervisor to restart it.
+    if (!m.desiredRunning && m.pid !== null && m.pid !== undefined && !isProcessAlive(m.pid)) {
+      updateMigration(m.id, { pid: null });
+      continue;
+    }
+
     await probe(m, cfg.hungTicks);
   }
 }
