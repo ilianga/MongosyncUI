@@ -42,11 +42,21 @@ export default function SettingsPage() {
   const save = async () => {
     setSaving(true);
     try {
-      await fetch("/api/settings", {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s),
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(s),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save settings");
+      }
       toast.success("Settings saved");
-    } finally { setSaving(false); }
+    } catch (err) {
+      toast.error("Save failed", { description: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const testBinary = async () => {
