@@ -63,11 +63,32 @@ npm run lint         # Lint with ESLint
 ## Key Design Decisions
 
 - **Simplicity first** — minimal config, sensible defaults, single command to run
+- **Supervised processes** — each mongosync runs in a tmux session (`msync-<id>`) under a
+  respawn wrapper (crash → relaunch with backoff + crash-loop cap). The app's poller is a
+  health monitor that reconciles desired-vs-actual state, restarts hung instances, and
+  re-drives `/start` so respawned binaries resume. Identity is the session name + a
+  `/progress` handshake, never a raw PID. `supervisionMode=legacy` restores the old
+  detached-spawn behavior; tmux-absent falls back to legacy automatically.
+- **Optional boot service** — a systemd user unit (Linux) / launchd agent (macOS),
+  installed from Settings, starts the app at boot so reconciliation rebuilds sessions
+  after a reboot. This is the only OS-specific, optional piece.
 - **No WebSockets** — client polls API every 5s for live updates
-- **No daemon** — polling only runs while Next.js server is running
 - **No auth** — personal tool, localhost only
 - **SQLite** — zero-config persistence, no extra services
 - **One mongosync process per migration** — each on its own port (auto-assigned from 27182)
+
+## Supervision
+
+Process state and lifecycle are stored in `~/.mongosync-ui/supervision/<id>/`:
+- `status.json` — current wrapper status (PID, uptime, restarts, crash-loop state)
+- `stop` — sentinel file; presence signals intentional shutdown
+
+Supervision tuning (all in Settings):
+- `supervisionMode` — `supervised` (default, requires tmux) or `legacy` (old detached behavior)
+- `backoffCapSec` — max backoff between crash retries (default: 60s)
+- `crashLoopMax` — max crashes before terminal `CRASH_LOOP` state (default: 5)
+- `crashLoopWindowSec` — time window for crash counting (default: 300s)
+- `hungTicks` — consecutive poll ticks without response before hung-instance restart (default: 6)
 
 ## Mongosync API
 
