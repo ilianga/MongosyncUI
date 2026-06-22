@@ -3,8 +3,33 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { MigrationCard } from "@/components/migration-card";
+import { Topbar } from "@/components/app-shell/topbar";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import Link from "next/link";
 import type { Migration } from "@/lib/types";
+
+function SkeletonCard() {
+  return (
+    <div className="rounded-lg border border-border bg-card p-5 space-y-3">
+      <Skeleton className="h-4 w-2/3" />
+      <Skeleton className="h-2 w-full" />
+      <Skeleton className="h-8 w-full" />
+    </div>
+  );
+}
+
+const LeafIcon = (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    className="h-6 w-6 text-[#00ED64]"
+    aria-hidden="true"
+  >
+    <path d="M17 8C8 10 5.9 16.17 3.82 21.34L5.71 22l1-2.3A4.49 4.49 0 0 0 8 20C19 20 22 3 22 3c-1 2-8 2-8 8z" />
+  </svg>
+);
 
 export default function DashboardPage() {
   const [migrations, setMigrations] = useState<Migration[]>([]);
@@ -23,22 +48,41 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Migrations</h1>
-        <Link href="/migrations/new"><Button>New Migration</Button></Link>
+    <>
+      <Topbar
+        title="Migrations"
+        action={
+          <Link href="/migrations/new">
+            <Button>+ New Migration</Button>
+          </Link>
+        }
+      />
+      <div className="px-0 pt-6">
+        {loading ? (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+        ) : migrations.length === 0 ? (
+          <EmptyState
+            icon={LeafIcon}
+            title="No migrations yet"
+            description="Create your first cluster-to-cluster migration to start syncing."
+            action={
+              <Link href="/migrations/new">
+                <Button>+ New Migration</Button>
+              </Link>
+            }
+          />
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 animate-fade-in">
+            {migrations.map((m) => (
+              <MigrationCard key={m.id} migration={m} onAction={fetchMigrations} />
+            ))}
+          </div>
+        )}
       </div>
-      {loading ? (
-        <p className="text-muted-foreground">Loading...</p>
-      ) : migrations.length === 0 ? (
-        <p className="text-muted-foreground">No migrations yet. Create one to get started.</p>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {migrations.map((m) => (
-            <MigrationCard key={m.id} migration={m} onAction={fetchMigrations} />
-          ))}
-        </div>
-      )}
-    </div>
+    </>
   );
 }

@@ -20,17 +20,42 @@ export function NamespaceFilterFields({
   const fa = useFieldArray({ control, name });
   return (
     <div className="space-y-2">
-      <Label>{label}</Label>
+      <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</Label>
       {fa.fields.map((field, i) => (
-        <div key={field.id} className="space-y-2 rounded-md border p-2">
-          <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
-            <Input placeholder="database" {...register(`${name}.${i}.database`)} />
-            <Input placeholder="collections (comma-separated)" {...register(`${name}.${i}.collections`)} />
-            <Button type="button" variant="outline" size="sm" onClick={() => fa.remove(i)}>X</Button>
+        <div key={field.id} className="space-y-1.5 rounded-md border border-border p-2">
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-1.5">
+            <Input
+              placeholder="database"
+              className="font-mono text-sm h-8"
+              {...register(`${name}.${i}.database`)}
+            />
+            <Input
+              placeholder="collections"
+              className="font-mono text-sm h-8"
+              {...register(`${name}.${i}.collections`)}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+              onClick={() => fa.remove(i)}
+              aria-label="Remove row"
+            >
+              ×
+            </Button>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Input placeholder="databaseRegex (optional)" {...register(`${name}.${i}.databaseRegex`)} />
-            <Input placeholder="collectionsRegex (optional)" {...register(`${name}.${i}.collectionsRegex`)} />
+          <div className="grid grid-cols-2 gap-1.5">
+            <Input
+              placeholder="databaseRegex (optional)"
+              className="font-mono text-sm h-8"
+              {...register(`${name}.${i}.databaseRegex`)}
+            />
+            <Input
+              placeholder="collectionsRegex (optional)"
+              className="font-mono text-sm h-8"
+              {...register(`${name}.${i}.collectionsRegex`)}
+            />
           </div>
         </div>
       ))}
@@ -38,9 +63,10 @@ export function NamespaceFilterFields({
         type="button"
         variant="outline"
         size="sm"
+        className="border-dashed text-muted-foreground hover:text-foreground"
         onClick={() => fa.append({ database: "", collections: "", databaseRegex: "", collectionsRegex: "" })}
       >
-        Add {label} row
+        + Add {label} row
       </Button>
     </div>
   );

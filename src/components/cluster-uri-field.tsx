@@ -49,14 +49,29 @@ export function ClusterUriField({
     <div className="space-y-2">
       <Label htmlFor={id}>{label}</Label>
       <div className="flex gap-2">
-        <Input id={id} placeholder="mongodb://..." {...register} />
+        <Input
+          id={id}
+          placeholder="mongodb://..."
+          className="font-mono"
+          {...register}
+        />
         <Button type="button" variant="outline" disabled={testing || !value} onClick={test}>
           {testing ? "Testing..." : "Test"}
         </Button>
       </div>
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
       {result && (
-        <p className={`text-sm ${result.ok ? "text-green-600" : "text-red-500"}`}>{result.msg}</p>
+        result.ok ? (
+          <span className="inline-flex items-center gap-1.5 text-xs text-[#00684A] dark:text-[#71F6BA]">
+            <span className="h-1.5 w-1.5 rounded-full bg-[#00684A] dark:bg-[#71F6BA]" aria-hidden="true" />
+            {result.msg}
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 text-xs text-destructive">
+            <span className="h-1.5 w-1.5 rounded-full bg-destructive" aria-hidden="true" />
+            {result.msg}
+          </span>
+        )
       )}
     </div>
   );

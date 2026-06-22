@@ -1,10 +1,13 @@
 import { MigrationForm } from "@/components/migration-form";
+import { Topbar } from "@/components/app-shell/topbar";
 
 export default function NewMigrationPage() {
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">New Migration</h1>
-      <MigrationForm />
-    </div>
+    <>
+      <Topbar title="New Migration" />
+      <div className="max-w-2xl animate-fade-in px-6 py-6">
+        <MigrationForm />
+      </div>
+    </>
   );
 }
