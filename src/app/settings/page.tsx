@@ -39,6 +39,16 @@ export default function SettingsPage() {
 
   const set = (k: keyof Settings) => (v: string) => setS((prev) => ({ ...prev, [k]: v }));
 
+  const testBinary = async () => {
+    setTesting(true); setVersion(null); setVersionError(null);
+    try {
+      const res = await fetch("/api/mongosync/version");
+      const data = await res.json();
+      res.ok ? setVersion(data.version) : setVersionError(data.error);
+    } catch (e) { setVersionError((e as Error).message); }
+    finally { setTesting(false); }
+  };
+
   const save = async () => {
     setSaving(true);
     try {
@@ -52,21 +62,14 @@ export default function SettingsPage() {
         throw new Error(data.error || "Failed to save settings");
       }
       toast.success("Settings saved");
+      // Verify the binary against the value we just persisted (the version
+      // endpoint reads the saved setting), so Save doubles as a check.
+      await testBinary();
     } catch (err) {
       toast.error("Save failed", { description: (err as Error).message });
     } finally {
       setSaving(false);
     }
-  };
-
-  const testBinary = async () => {
-    setTesting(true); setVersion(null); setVersionError(null);
-    try {
-      const res = await fetch("/api/mongosync/version");
-      const data = await res.json();
-      res.ok ? setVersion(data.version) : setVersionError(data.error);
-    } catch (e) { setVersionError((e as Error).message); }
-    finally { setTesting(false); }
   };
 
   return (
@@ -85,6 +88,12 @@ export default function SettingsPage() {
                 {testing ? "Testing..." : "Test"}
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Path to the <span className="font-mono">mongosync</span> executable, or its containing
+              folder (e.g. <span className="font-mono">…/bin/</span>) — the binary inside is used. Leave
+              blank to find <span className="font-mono">mongosync</span> on your <span className="font-mono">PATH</span>.
+              Saving runs a version check automatically.
+            </p>
             {version && <p className="text-sm text-green-600">Version: {version}</p>}
             {versionError && <p className="text-sm text-red-500">Error: {versionError}</p>}
           </div>
