@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { getSetting } from "@/lib/db";
+import { resolveMongosyncBin } from "@/lib/process-manager";
 
 const execFileAsync = promisify(execFile);
 
 export async function GET() {
-  const bin = getSetting("mongosyncPath") || "mongosync";
+  const bin = resolveMongosyncBin();
   try {
     const { stdout } = await execFileAsync(bin, ["--version"], { timeout: 5000 });
     return NextResponse.json({ version: stdout.trim() });
