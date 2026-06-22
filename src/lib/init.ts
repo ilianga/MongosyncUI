@@ -1,5 +1,8 @@
 import { getAllMigrations, updateMigration, getSetting, setSetting } from "./db";
 import { isProcessAlive } from "./process-manager";
+import { reconcile } from "./supervisor";
+import { getSupervisionConfig } from "./supervision-config";
+import { hasTmux } from "./tmux";
 import { startPoller } from "./poller";
 import { execFileSync } from "node:child_process";
 
@@ -23,11 +26,17 @@ export function initApp(): void {
   if (initialized) return;
   initialized = true;
 
-  // Reconcile processes that died while the server was down.
-  for (const m of getAllMigrations()) {
-    if (m.pid && !isProcessAlive(m.pid)) updateMigration(m.id, { pid: null });
+  detectBinary();
+
+  if (getSupervisionConfig().mode === "supervised" && hasTmux()) {
+    // Rebuild sessions for migrations that should be running (server restart / reboot).
+    reconcile();
+  } else {
+    // Legacy: reconcile dead PIDs that died while the server was down.
+    for (const m of getAllMigrations()) {
+      if (m.pid && !isProcessAlive(m.pid)) updateMigration(m.id, { pid: null });
+    }
   }
 
-  detectBinary();
   startPoller(Number(getSetting("pollInterval") || "5000"));
 }
