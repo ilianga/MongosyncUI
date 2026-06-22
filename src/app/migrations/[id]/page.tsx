@@ -44,23 +44,44 @@ export default function MigrationDetailPage() {
   if (loading) return <p className="text-muted-foreground">Loading...</p>;
   if (!migration) return <p className="text-muted-foreground">Migration not found.</p>;
 
+  const liveSource = progress?.progress?.directionMapping?.Source;
+  const liveDest = progress?.progress?.directionMapping?.Destination;
+  const sourceLabel = liveSource ?? migration.sourceUri;
+  const destLabel = liveDest ?? migration.destUri;
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="space-y-1">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">{migration.name}</h1>
-            <StateBadge state={migration.state} />
+    <>
+      {/* Sticky detail header */}
+      <div className="sticky top-0 z-10 -mx-6 border-b border-border bg-background/80 px-6 py-3 backdrop-blur">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-0.5">
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-xl font-semibold truncate">{migration.name}</h1>
+              <StateBadge state={migration.state} />
+            </div>
+            <p className="font-mono text-xs text-muted-foreground truncate">
+              {sourceLabel}
+              <span className="mx-1.5 text-primary">→</span>
+              {destLabel}
+            </p>
           </div>
-          <p className="text-sm text-muted-foreground">{migration.sourceUri} → {migration.destUri}</p>
+          <div className="shrink-0">
+            <ActionButtons
+              migration={migration}
+              onAction={fetchData}
+              onConfirmCommit={() => setCommitOpen(true)}
+            />
+          </div>
         </div>
-        <ActionButtons migration={migration} onAction={fetchData} onConfirmCommit={() => setCommitOpen(true)} />
       </div>
 
-      <ProgressPanel data={progress} />
-      <VerificationPanel verification={progress?.progress?.verification} />
-      <MetricsCharts metrics={metrics} />
-      <LogsPanel migrationId={migration.id} />
+      {/* Body */}
+      <div className="space-y-6 animate-fade-in pt-6">
+        <ProgressPanel data={progress} />
+        <VerificationPanel verification={progress?.progress?.verification} />
+        <MetricsCharts metrics={metrics} />
+        <LogsPanel migrationId={migration.id} />
+      </div>
 
       <PreCommitDialog
         open={commitOpen}
@@ -69,6 +90,6 @@ export default function MigrationDetailPage() {
         progress={progress}
         onCommitted={fetchData}
       />
-    </div>
+    </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export function LogsPanel({ migrationId }: { migrationId: string }) {
   const [lines, setLines] = useState<string[]>([]);
@@ -35,19 +36,50 @@ export function LogsPanel({ migrationId }: { migrationId: string }) {
 
   return (
     <div className="space-y-2">
+      {/* Header strip */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">Logs</h3>
-        <div className="flex gap-2">
-          <Button size="sm" variant={stream === "stdout" ? "default" : "outline"} onClick={() => setStream("stdout")}>stdout</Button>
-          <Button size="sm" variant={stream === "stderr" ? "default" : "outline"} onClick={() => setStream("stderr")}>stderr</Button>
-          <Button size="sm" variant="outline" onClick={download}>Download</Button>
+        <div className="flex items-center gap-1 rounded-md border border-border bg-muted p-0.5">
+          <button
+            onClick={() => setStream("stdout")}
+            className={cn(
+              "rounded px-2.5 py-1 text-xs font-mono font-medium transition-colors",
+              stream === "stdout"
+                ? "bg-secondary text-secondary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            stdout
+          </button>
+          <button
+            onClick={() => setStream("stderr")}
+            className={cn(
+              "rounded px-2.5 py-1 text-xs font-mono font-medium transition-colors",
+              stream === "stderr"
+                ? "bg-secondary text-secondary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            stderr
+          </button>
         </div>
+        <Button size="sm" variant="ghost" onClick={download} className="text-xs">
+          Download
+        </Button>
       </div>
-      <div ref={containerRef} className="h-64 overflow-auto rounded-md border bg-black p-3 font-mono text-xs text-green-400">
+
+      {/* Terminal area */}
+      <div
+        ref={containerRef}
+        className="h-80 overflow-auto rounded-lg border bg-[#06212E] p-3 font-mono text-xs text-[#71F6BA] whitespace-pre-wrap"
+      >
         {lines.length === 0 ? (
-          <p className="text-gray-500">No logs available.</p>
+          <p className="text-[#3D4F58]">No output yet.</p>
         ) : (
-          lines.map((line, i) => <div key={i} className="whitespace-pre-wrap">{line}</div>)
+          lines.map((line, i) => (
+            <div key={i} className="whitespace-pre-wrap leading-relaxed">
+              {line}
+            </div>
+          ))
         )}
       </div>
     </div>

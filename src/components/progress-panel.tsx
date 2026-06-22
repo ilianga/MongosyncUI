@@ -3,26 +3,24 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Stat } from "@/components/ui/stat";
 import { formatBytes, formatDuration } from "@/lib/format";
 import type { ProgressResponse } from "@/lib/process-manager";
 
-function Stat({ title, value, sub }: { title: string; value: string; sub?: string }) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
-        {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
-      </CardContent>
-    </Card>
-  );
-}
-
 export function ProgressPanel({ data }: { data: ProgressResponse | null }) {
   const p = data?.progress;
-  if (!p) return <p className="text-sm text-muted-foreground">Live progress unavailable (process not reporting).</p>;
+
+  if (!p) {
+    return (
+      <Card className="border-border/60">
+        <CardContent className="py-6">
+          <p className="text-sm text-muted-foreground">
+            Live progress unavailable (process not reporting).
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const copied = p.collectionCopy?.estimatedCopiedBytes ?? 0;
   const total = p.collectionCopy?.estimatedTotalBytes ?? 0;
@@ -34,44 +32,85 @@ export function ProgressPanel({ data }: { data: ProgressResponse | null }) {
   return (
     <div className="space-y-4">
       {(p.warnings ?? []).map((w, i) => (
-        <Alert key={i} variant="destructive"><AlertDescription>{w}</AlertDescription></Alert>
+        <Alert key={i} variant="destructive">
+          <AlertDescription>{w}</AlertDescription>
+        </Alert>
       ))}
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Stat title="Phase" value={p.info || p.state} />
-        <Stat title="Lag Time" value={p.lagTimeSeconds != null ? `${p.lagTimeSeconds}s` : "—"} />
-        <Stat title="Events Applied" value={(p.totalEventsApplied ?? 0).toLocaleString()} />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat label="Phase" value={p.info || p.state} />
         <Stat
-          title="CEA Catchup"
-          value={p.estimatedSecondsToCEACatchup != null ? formatDuration(p.estimatedSecondsToCEACatchup) : "—"}
+          label="Lag Time"
+          value={p.lagTimeSeconds != null ? `${p.lagTimeSeconds}s` : "—"}
+          mono
         />
-        <Stat title="Oplog Window" value={p.estimatedOplogTimeRemaining || "—"} />
-        <Stat title="Source Ping" value={p.source?.pingLatencyMs != null ? `${p.source.pingLatencyMs} ms` : "—"} />
-        <Stat title="Dest Ping" value={p.destination?.pingLatencyMs != null ? `${p.destination.pingLatencyMs} ms` : "—"} />
-        <Stat title="Can Commit" value={p.canCommit ? "Yes" : "No"} />
+        <Stat
+          label="Events Applied"
+          value={(p.totalEventsApplied ?? 0).toLocaleString()}
+          mono
+        />
+        <Stat
+          label="CEA Catchup"
+          value={
+            p.estimatedSecondsToCEACatchup != null
+              ? formatDuration(p.estimatedSecondsToCEACatchup)
+              : "—"
+          }
+          mono
+        />
+        <Stat
+          label="Oplog Window"
+          value={p.estimatedOplogTimeRemaining || "—"}
+          mono
+        />
+        <Stat
+          label="Source Ping"
+          value={
+            p.source?.pingLatencyMs != null ? `${p.source.pingLatencyMs} ms` : "—"
+          }
+          mono
+        />
+        <Stat
+          label="Dest Ping"
+          value={
+            p.destination?.pingLatencyMs != null
+              ? `${p.destination.pingLatencyMs} ms`
+              : "—"
+          }
+          mono
+        />
+        <Stat label="Can Commit" value={p.canCommit ? "Yes" : "No"} />
       </div>
 
       <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-sm">Collection Copy</CardTitle></CardHeader>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Collection Copy</CardTitle>
+        </CardHeader>
         <CardContent className="space-y-2">
           <Progress value={copyPct} />
-          <p className="text-xs text-muted-foreground">
+          <p className="font-mono text-xs text-muted-foreground">
             {formatBytes(copied)} of {formatBytes(total)} ({copyPct.toFixed(1)}%)
           </p>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-sm">Index Building</CardTitle></CardHeader>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Index Building</CardTitle>
+        </CardHeader>
         <CardContent className="space-y-2">
           <Progress value={idxPct} />
-          <p className="text-xs text-muted-foreground">{idxBuilt} of {idxTotal} indexes built</p>
+          <p className="font-mono text-xs text-muted-foreground">
+            {idxBuilt} of {idxTotal} indexes built
+          </p>
         </CardContent>
       </Card>
 
       {p.directionMapping && (
-        <p className="text-xs text-muted-foreground">
-          Direction: {p.directionMapping.Source} → {p.directionMapping.Destination}
+        <p className="font-mono text-xs text-muted-foreground">
+          Direction: {p.directionMapping.Source}{" "}
+          <span className="text-primary">→</span>{" "}
+          {p.directionMapping.Destination}
         </p>
       )}
     </div>
