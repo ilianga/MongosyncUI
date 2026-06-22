@@ -11,7 +11,7 @@ import type { ProgressResponse } from "@/lib/process-manager";
 
 function Check({ ok, label }: { ok: boolean; label: string }) {
   return (
-    <li className={ok ? "text-green-600" : "text-muted-foreground"}>
+    <li className={ok ? "text-primary" : "text-muted-foreground"}>
       {ok ? "✓" : "○"} {label}
     </li>
   );
