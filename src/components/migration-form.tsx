@@ -33,8 +33,10 @@ export function MigrationForm() {
   });
 
   const reversible = form.watch("reversible");
+  const rowsHaveRealFilter = (rows: { database?: string; databaseRegex?: string }[]) =>
+    rows.some((r) => (r.database ?? "").trim() !== "" || (r.databaseRegex ?? "").trim() !== "");
   const hasFilters =
-    form.watch("includeNamespaces").length > 0 || form.watch("excludeNamespaces").length > 0;
+    rowsHaveRealFilter(form.watch("includeNamespaces")) || rowsHaveRealFilter(form.watch("excludeNamespaces"));
 
   const onSubmit = async (values: MigrationFormValues) => {
     setSubmitting(true);

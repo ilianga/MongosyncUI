@@ -3,7 +3,7 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export function ClusterUriField({
   id,
@@ -20,6 +20,8 @@ export function ClusterUriField({
 }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => { setResult(null); }, [value]);
 
   const test = async () => {
     setTesting(true);
