@@ -9,7 +9,10 @@ export function ThemeToggle() {
   const { theme, setTheme } = useTheme()
 
   useEffect(() => {
-    setMounted(true)
+    // Defer past the effect body so we don't trigger a synchronous cascading
+    // render (react-hooks/set-state-in-effect). Behavior is unchanged: this flips
+    // `mounted` to true once, on the client, after the first paint.
+    queueMicrotask(() => setMounted(true))
   }, [])
 
   if (!mounted) {

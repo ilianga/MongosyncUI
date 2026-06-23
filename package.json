@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run --exclude 'src/lib/__tests__/supervision.integration.test.ts' && vitest run src/lib/__tests__/supervision.integration.test.ts",
+    "test:ci": "vitest run --exclude 'src/lib/__tests__/supervision.integration.test.ts'",
     "test:integration": "vitest run src/lib/__tests__/supervision.integration.test.ts",
     "test:watch": "vitest",
     "supervisor:install": "tsx scripts/supervisor-cli.mjs install",

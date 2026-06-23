@@ -53,8 +53,8 @@ export function MigrationForm() {
   // server moves staged PEMs into the migration's permanent cert dir.
   const tokenRef = useRef(nanoid());
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const form = useForm<MigrationFormValues>({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resolver: zodResolver(migrationFormSchema) as any,
     defaultValues: {
       name: "", source: { ...emptyConn }, dest: { ...emptyConn },
