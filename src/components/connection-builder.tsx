@@ -6,9 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { UseFormReturn } from "react-hook-form";
-import { connToConfig, type MigrationFormValues } from "@/lib/schemas";
+import { connToConfig, configToConnForm, type MigrationFormValues } from "@/lib/schemas";
+import { CONNECTION_COLORS, DEFAULT_CONNECTION_COLOR } from "@/lib/colors";
+import type { SavedConnection } from "@/lib/types";
 
 const selectClass =
   "bg-background border border-input rounded-md px-2 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -37,11 +39,14 @@ export function ConnectionBuilder({
   label,
   form,
   token,
+  showSavedConnections = true,
 }: {
   side: Side;
   label: string;
   form: UseFormReturn<MigrationFormValues>;
   token: string;
+  /** When true (default), shows the "use a saved connection" picker + "save as" affordance. */
+  showSavedConnections?: boolean;
 }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{ status: "ok" | "warn" | "error"; msg: string } | null>(null);
@@ -53,6 +58,61 @@ export function ConnectionBuilder({
   const setVal = (k: keyof MigrationFormValues["source"], v: unknown) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     form.setValue(f(k) as any, v as any, { shouldValidate: true });
+
+  // Load every field of one flat connection form object into this side's form values.
+  const loadConnForm = (cf: ReturnType<typeof configToConnForm>) => {
+    (Object.keys(cf) as (keyof typeof cf)[]).forEach((k) =>
+      setVal(k as keyof MigrationFormValues["source"], cf[k])
+    );
+  };
+
+  // ── Saved connections (picker + "save as") ──
+  const [saved, setSaved] = useState<SavedConnection[]>([]);
+  const [savingOpen, setSavingOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [saveColor, setSaveColor] = useState<string>(DEFAULT_CONNECTION_COLOR);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const loadSaved = () => {
+    fetch("/api/connections")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: SavedConnection[]) => setSaved(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  };
+  useEffect(() => {
+    if (showSavedConnections) loadSaved();
+  }, [showSavedConnections]);
+
+  const applySaved = (id: string) => {
+    const sc = saved.find((s) => s.id === id);
+    if (!sc) return;
+    loadConnForm(configToConnForm(sc.conn));
+    setResult(null);
+  };
+
+  const saveAsConnection = async () => {
+    setSaveBusy(true);
+    setSaveMsg(null);
+    try {
+      const conn = connToConfig(form.getValues()[side]);
+      const res = await fetch("/api/connections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: saveName.trim(), color: saveColor, conn }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Save failed");
+      setSaveMsg({ ok: true, text: `Saved "${data.name}"` });
+      setSaveName("");
+      setSavingOpen(false);
+      loadSaved();
+    } catch (e) {
+      setSaveMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setSaveBusy(false);
+    }
+  };
 
   const authMethod = (w("authMethod") ?? "none") as AuthMethod;
   const raw = (w("raw") ?? "") as string;
@@ -108,6 +168,81 @@ export function ConnectionBuilder({
           {testing ? "Testing..." : "Test"}
         </Button>
       </div>
+
+      {showSavedConnections && (
+        <div className="space-y-2 rounded-md border border-dashed border-border p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Label className="text-xs">Use a saved connection</Label>
+            <select
+              className={selectClass}
+              value=""
+              disabled={saved.length === 0}
+              onChange={(e) => {
+                if (e.target.value) applySaved(e.target.value);
+              }}
+            >
+              <option value="">{saved.length ? "Select…" : "No saved connections"}</option>
+              {saved.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-xs"
+              onClick={() => {
+                setSavingOpen((o) => !o);
+                setSaveMsg(null);
+              }}
+            >
+              {savingOpen ? "Cancel" : "Save as connection"}
+            </Button>
+          </div>
+
+          {savingOpen && (
+            <div className="space-y-2 pt-1">
+              <Input
+                placeholder="Connection name"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                {CONNECTION_COLORS.map((c) => (
+                  <button
+                    key={c.name}
+                    type="button"
+                    title={c.name}
+                    onClick={() => setSaveColor(c.name)}
+                    className={`h-5 w-5 rounded-full border-2 ${
+                      saveColor === c.name ? "border-foreground" : "border-transparent"
+                    }`}
+                    style={{ background: c.value }}
+                    aria-label={c.name}
+                  />
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="ml-auto"
+                  disabled={saveBusy || !saveName.trim()}
+                  onClick={saveAsConnection}
+                >
+                  {saveBusy ? "Saving..." : "Save"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {saveMsg && (
+            <p className={`text-xs ${saveMsg.ok ? "text-primary" : "text-destructive"}`}>
+              {saveMsg.text}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Advanced: paste a connection string (escape hatch → conn.raw) */}
       <Collapsible>

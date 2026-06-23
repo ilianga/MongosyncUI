@@ -2,7 +2,14 @@ import Database from "better-sqlite3";
 import path from "path";
 import { nanoid } from "nanoid";
 import { getDataDir } from "./paths";
-import type { Migration, CreateMigrationInput, Metric, MetricInput } from "./types";
+import type {
+  Migration,
+  CreateMigrationInput,
+  Metric,
+  MetricInput,
+  SavedConnection,
+} from "./types";
+import type { ConnectionConfig } from "./connection";
 
 let db: Database.Database | null = null;
 
@@ -46,6 +53,14 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_metrics_migration ON metrics(migrationId, timestamp);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS connections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      conn TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
   `);
   migrateSchema(db);
   return db;
@@ -185,4 +200,89 @@ export function setSetting(key: string, value: string): void {
       "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     )
     .run(key, value);
+}
+
+// ── Saved connections (reusable, colour-tagged) ──
+// Stored with `conn` as a JSON string; the helpers below parse it back to a structured
+// ConnectionConfig so callers always see a typed SavedConnection.
+
+interface SavedConnectionRow {
+  id: string;
+  name: string;
+  color: string;
+  conn: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+function rowToSavedConnection(row: SavedConnectionRow): SavedConnection {
+  let conn: ConnectionConfig = {};
+  try {
+    conn = JSON.parse(row.conn) as ConnectionConfig;
+  } catch {
+    /* corrupt JSON — fall back to empty config */
+  }
+  return { ...row, conn };
+}
+
+export function getConnections(): SavedConnection[] {
+  const rows = getDb()
+    .prepare("SELECT * FROM connections ORDER BY createdAt DESC")
+    .all() as SavedConnectionRow[];
+  return rows.map(rowToSavedConnection);
+}
+
+export function getSavedConnection(id: string): SavedConnection | undefined {
+  const row = getDb().prepare("SELECT * FROM connections WHERE id = ?").get(id) as
+    | SavedConnectionRow
+    | undefined;
+  return row ? rowToSavedConnection(row) : undefined;
+}
+
+export function createSavedConnection(input: {
+  name: string;
+  color: string;
+  conn: ConnectionConfig;
+}): SavedConnection {
+  const now = Date.now();
+  const saved: SavedConnection = {
+    id: nanoid(),
+    name: input.name,
+    color: input.color,
+    conn: input.conn,
+    createdAt: now,
+    updatedAt: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO connections (id, name, color, conn, createdAt, updatedAt)
+       VALUES (@id, @name, @color, @conn, @createdAt, @updatedAt)`
+    )
+    .run({ ...saved, conn: JSON.stringify(saved.conn) });
+  return saved;
+}
+
+export function updateSavedConnection(
+  id: string,
+  partial: { name?: string; color?: string; conn?: ConnectionConfig }
+): SavedConnection | undefined {
+  const existing = getSavedConnection(id);
+  if (!existing) return undefined;
+  const next: SavedConnection = {
+    ...existing,
+    name: partial.name ?? existing.name,
+    color: partial.color ?? existing.color,
+    conn: partial.conn ?? existing.conn,
+    updatedAt: Date.now(),
+  };
+  getDb()
+    .prepare(
+      "UPDATE connections SET name = @name, color = @color, conn = @conn, updatedAt = @updatedAt WHERE id = @id"
+    )
+    .run({ ...next, conn: JSON.stringify(next.conn) });
+  return next;
+}
+
+export function deleteSavedConnection(id: string): void {
+  getDb().prepare("DELETE FROM connections WHERE id = ?").run(id);
 }

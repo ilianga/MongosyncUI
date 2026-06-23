@@ -83,6 +83,20 @@ export interface StartConfig {
 // Defined in lib/connection.ts; re-exported here so types.ts stays the single import point.
 export type { ConnectionConfig } from "./connection";
 
+/**
+ * A saved, reusable, colour-tagged connection (Compass-style favourite). `conn` is the
+ * structured ConnectionConfig; `color` is a palette name resolved via lib/colors.ts.
+ * In the DB row `conn` is stored as a JSON string; in API responses it is a parsed object.
+ */
+export interface SavedConnection {
+  id: string;
+  name: string;
+  color: string;
+  conn: import("./connection").ConnectionConfig;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface Migration {
   id: string;
   name: string;

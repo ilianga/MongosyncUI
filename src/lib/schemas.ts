@@ -78,6 +78,66 @@ export function connToConfig(c: ConnectionFormValues): ConnectionConfig {
   return conn;
 }
 
+/**
+ * Reverse of connToConfig: load a stored ConnectionConfig back into flat connection form
+ * values so the builder can be populated when a saved connection is picked (or edited).
+ */
+export function configToConnForm(conn: ConnectionConfig): ConnectionFormValues {
+  const props = conn.authMechanismProperties ?? {};
+  return {
+    raw: conn.raw ?? "",
+    scheme: conn.scheme ?? "mongodb",
+    hosts: (conn.hosts ?? []).join(", "),
+    authMethod: conn.authMethod ?? "none",
+    username: conn.username ?? "",
+    password: conn.password ?? "",
+    authSource: conn.authSource ?? "",
+    authMechanism: conn.authMechanism ?? "DEFAULT",
+    serviceName: props.SERVICE_NAME ?? "",
+    awsSessionToken: props.AWS_SESSION_TOKEN ?? "",
+    tlsEnabled: conn.tls?.enabled ?? false,
+    tlsCaFile: conn.tls?.caFile ?? "",
+    tlsCertKeyFile: conn.tls?.certKeyFile ?? "",
+    tlsCertKeyPassword: conn.tls?.certKeyPassword ?? "",
+    tlsAllowInvalidCertificates: conn.tls?.allowInvalidCertificates ?? false,
+    tlsAllowInvalidHostnames: conn.tls?.allowInvalidHostnames ?? false,
+  };
+}
+
+// Server-side validation for a structured ConnectionConfig payload (saved-connection API).
+// Mirrors lib/connection.ts ConnectionConfig; all fields optional so partial configs and
+// the raw passthrough both validate.
+export const connectionConfigSchema = z.object({
+  raw: z.string().optional(),
+  scheme: z.enum(["mongodb", "mongodb+srv"]).optional(),
+  hosts: z.array(z.string()).optional(),
+  authMethod: z.enum(["none", "password", "x509", "kerberos", "ldap", "aws", "oidc"]).optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+  authSource: z.string().optional(),
+  authMechanism: z.enum(["DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256"]).optional(),
+  authMechanismProperties: z.record(z.string(), z.string()).optional(),
+  tls: z
+    .object({
+      enabled: z.boolean().optional(),
+      caFile: z.string().optional(),
+      certKeyFile: z.string().optional(),
+      certKeyPassword: z.string().optional(),
+      allowInvalidCertificates: z.boolean().optional(),
+      allowInvalidHostnames: z.boolean().optional(),
+    })
+    .optional(),
+});
+
+// Create/update payloads for a saved connection.
+export const savedConnectionSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  color: z.string().min(1, "Color is required"),
+  conn: connectionConfigSchema,
+});
+
+export const savedConnectionUpdateSchema = savedConnectionSchema.partial();
+
 export const shardingEntrySchema = z.object({
   database: z.string().min(1),
   collection: z.string().min(1),

@@ -31,6 +31,42 @@ describe("db", () => {
     expect(names).toContain("migrations");
     expect(names).toContain("metrics");
     expect(names).toContain("settings");
+    expect(names).toContain("connections");
+  });
+
+  it("creates, retrieves, lists, updates, and deletes saved connections", async () => {
+    const {
+      createSavedConnection, getSavedConnection, getConnections,
+      updateSavedConnection, deleteSavedConnection,
+    } = await loadDb();
+
+    const c = createSavedConnection({
+      name: "Prod",
+      color: "Green",
+      conn: { scheme: "mongodb", hosts: ["a:27017"], authMethod: "password", username: "u", password: "p" },
+    });
+    expect(c.id).toBeTruthy();
+    expect(c.name).toBe("Prod");
+    expect(c.createdAt).toBe(c.updatedAt);
+
+    // conn is parsed back to a structured object, not a JSON string.
+    const fetched = getSavedConnection(c.id)!;
+    expect(fetched.conn.hosts).toEqual(["a:27017"]);
+    expect(fetched.conn.username).toBe("u");
+    expect(getConnections()).toHaveLength(1);
+
+    const updated = updateSavedConnection(c.id, { name: "Prod Atlas", color: "Blue" })!;
+    expect(updated.name).toBe("Prod Atlas");
+    expect(updated.color).toBe("Blue");
+    // unspecified field (conn) is preserved
+    expect(updated.conn.hosts).toEqual(["a:27017"]);
+    expect(getSavedConnection(c.id)!.name).toBe("Prod Atlas");
+
+    expect(updateSavedConnection("missing", { name: "x" })).toBeUndefined();
+
+    deleteSavedConnection(c.id);
+    expect(getSavedConnection(c.id)).toBeUndefined();
+    expect(getConnections()).toHaveLength(0);
   });
 
   it("creates, retrieves, and lists migrations", async () => {
