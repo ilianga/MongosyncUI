@@ -7,6 +7,8 @@ import { readWrapperStatus } from "@/lib/supervisor";
 import { initApp } from "@/lib/init";
 import { hasSyncState } from "@/lib/cluster-check";
 import { computeSourceTotalBytes } from "@/lib/source-stats";
+import { buildConnectionString, type ConnectionConfig } from "@/lib/connection";
+import { commitStagedCerts } from "@/lib/certs";
 
 export async function GET() {
   initApp();
@@ -38,7 +40,16 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   initApp();
-  const { name, sourceUri, destUri, config } = await request.json();
+  const body = await request.json();
+  const { name, config, token } = body;
+
+  // Accept EITHER structured { sourceConn, destConn } ConnectionConfigs OR legacy
+  // { sourceUri, destUri } strings (treated as raw passthrough conns). Cert paths in
+  // the structured conns still point at the staging area at this point.
+  const sourceConn: ConnectionConfig =
+    body.sourceConn ?? (typeof body.sourceUri === "string" ? { raw: body.sourceUri } : {});
+  const destConn: ConnectionConfig =
+    body.destConn ?? (typeof body.destUri === "string" ? { raw: body.destUri } : {});
 
   const basePort = Number(getSetting("basePort") || "27182");
   const used = new Set(getAllMigrations().map((m) => m.port));
@@ -55,7 +66,46 @@ export async function POST(request: NextRequest) {
     ...(config ?? {}),
   };
 
-  const migration = createMigration({ name, sourceUri, destUri, config: merged, port });
+  // Build provisional URIs (staging cert paths) so createMigration has the required
+  // sourceUri/destUri; these are rewritten below once certs are committed to a stable dir.
+  const migration = createMigration({
+    name,
+    sourceUri: buildConnectionString(sourceConn),
+    destUri: buildConnectionString(destConn),
+    sourceConn: JSON.stringify(sourceConn),
+    destConn: JSON.stringify(destConn),
+    config: merged,
+    port,
+  });
+
+  // Move any staged certs into the migration's permanent dir and rewrite the conn objects'
+  // TLS file paths to point at the final locations. A single token covers both sides'
+  // uploads; we apply the matching kind to whichever side referenced a staged file.
+  const finalCerts = commitStagedCerts(token, migration.id);
+  const rewriteCertPaths = (conn: ConnectionConfig): ConnectionConfig => {
+    if (!conn.tls) return conn;
+    const tls = { ...conn.tls };
+    if (tls.caFile && finalCerts.ca) tls.caFile = finalCerts.ca;
+    if (tls.certKeyFile && finalCerts.certKey) tls.certKeyFile = finalCerts.certKey;
+    return { ...conn, tls };
+  };
+  const finalSourceConn = rewriteCertPaths(sourceConn);
+  const finalDestConn = rewriteCertPaths(destConn);
+  const sourceUri = buildConnectionString(finalSourceConn);
+  const destUri = buildConnectionString(finalDestConn);
+
+  // Persist final URIs + structured conns BEFORE spawning so the YAML config and all
+  // mongosh helpers read the stable cert paths.
+  updateMigration(migration.id, {
+    sourceUri,
+    destUri,
+    sourceConn: JSON.stringify(finalSourceConn),
+    destConn: JSON.stringify(finalDestConn),
+  });
+  migration.sourceUri = sourceUri;
+  migration.destUri = destUri;
+  migration.sourceConn = JSON.stringify(finalSourceConn);
+  migration.destConn = JSON.stringify(finalDestConn);
 
   // Compute the stable copy-progress denominator from the source in parallel with the
   // (~30s) startup wait, so it costs no extra latency. Best-effort: null on failure.

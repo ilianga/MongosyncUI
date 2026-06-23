@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { NamespaceFilter, StartConfig } from "./types";
+import type { NamespaceFilter, StartConfig, ConnectionConfig } from "./types";
 
 export const namespaceRowSchema = z.object({
   database: z.string().default(""),
@@ -7,6 +7,76 @@ export const namespaceRowSchema = z.object({
   collections: z.string().default(""), // comma-separated in the UI
   collectionsRegex: z.string().default(""),
 });
+
+// Structured per-cluster connection. Mirrors ConnectionConfig; the builder turns it into
+// a connection string on submit. `raw` is the advanced "paste a connection string" hatch.
+export const connectionSchema = z
+  .object({
+    raw: z.string().default(""),
+    scheme: z.enum(["mongodb", "mongodb+srv"]).default("mongodb"),
+    hosts: z.string().default(""), // comma-separated host:port in the UI
+    authMethod: z
+      .enum(["none", "password", "x509", "kerberos", "ldap", "aws", "oidc"])
+      .default("none"),
+    username: z.string().default(""),
+    password: z.string().default(""),
+    authSource: z.string().default(""),
+    authMechanism: z.enum(["DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256"]).default("DEFAULT"),
+    serviceName: z.string().default(""), // kerberos SERVICE_NAME
+    awsSessionToken: z.string().default(""),
+    tlsEnabled: z.boolean().default(false),
+    tlsCaFile: z.string().default(""), // staged absolute path (set after upload)
+    tlsCertKeyFile: z.string().default(""), // staged absolute path (set after upload)
+    tlsCertKeyPassword: z.string().default(""),
+    tlsAllowInvalidCertificates: z.boolean().default(false),
+    tlsAllowInvalidHostnames: z.boolean().default(false),
+  })
+  .superRefine((c, ctx) => {
+    // Either a raw connection string, or at least one host in structured mode.
+    if (!c.raw.trim() && !c.hosts.split(",").some((h) => h.trim())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide at least one host (or paste a connection string)",
+        path: ["hosts"],
+      });
+    }
+  });
+
+export type ConnectionFormValues = z.output<typeof connectionSchema>;
+
+/** Turn the flat connection form values into a structured ConnectionConfig for the API. */
+export function connToConfig(c: ConnectionFormValues): ConnectionConfig {
+  if (c.raw.trim()) return { raw: c.raw.trim() };
+
+  const conn: ConnectionConfig = {
+    scheme: c.scheme,
+    hosts: c.hosts.split(",").map((h) => h.trim()).filter(Boolean),
+    authMethod: c.authMethod,
+  };
+  if (c.username.trim()) conn.username = c.username.trim();
+  if (c.password) conn.password = c.password;
+
+  if (c.authMethod === "password") {
+    if (c.authMechanism !== "DEFAULT") conn.authMechanism = c.authMechanism;
+    if (c.authSource.trim()) conn.authSource = c.authSource.trim();
+  }
+
+  const props: Record<string, string> = {};
+  if (c.authMethod === "kerberos" && c.serviceName.trim()) props.SERVICE_NAME = c.serviceName.trim();
+  if (c.authMethod === "aws" && c.awsSessionToken.trim())
+    props.AWS_SESSION_TOKEN = c.awsSessionToken.trim();
+  if (Object.keys(props).length) conn.authMechanismProperties = props;
+
+  if (c.tlsEnabled) {
+    conn.tls = { enabled: true };
+    if (c.tlsCaFile.trim()) conn.tls.caFile = c.tlsCaFile.trim();
+    if (c.tlsCertKeyFile.trim()) conn.tls.certKeyFile = c.tlsCertKeyFile.trim();
+    if (c.tlsCertKeyPassword) conn.tls.certKeyPassword = c.tlsCertKeyPassword;
+    if (c.tlsAllowInvalidCertificates) conn.tls.allowInvalidCertificates = true;
+    if (c.tlsAllowInvalidHostnames) conn.tls.allowInvalidHostnames = true;
+  }
+  return conn;
+}
 
 export const shardingEntrySchema = z.object({
   database: z.string().min(1),
@@ -16,8 +86,8 @@ export const shardingEntrySchema = z.object({
 
 export const migrationFormSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  sourceUri: z.string().startsWith("mongodb", "Must be a mongodb:// or mongodb+srv:// URI"),
-  destUri: z.string().startsWith("mongodb", "Must be a mongodb:// or mongodb+srv:// URI"),
+  source: connectionSchema,
+  dest: connectionSchema,
   reversible: z.boolean().default(false),
   buildIndexes: z
     .enum(["afterDataCopy", "beforeDataCopy", "excludeHashed", "excludeHashedAfterCopy", "never"])

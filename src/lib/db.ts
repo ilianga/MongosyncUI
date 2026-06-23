@@ -64,6 +64,8 @@ function migrateSchema(database: Database.Database): void {
   add("lastRestartAt", "lastRestartAt INTEGER");
   add("stopped", "stopped INTEGER NOT NULL DEFAULT 0");
   add("plannedTotalBytes", "plannedTotalBytes INTEGER");
+  add("sourceConn", "sourceConn TEXT");
+  add("destConn", "destConn TEXT");
 
   // metrics table: additive columns added after the original schema.
   const metricCols = new Set(
@@ -81,6 +83,8 @@ export function createMigration(input: CreateMigrationInput): Migration {
     name: input.name,
     sourceUri: input.sourceUri,
     destUri: input.destUri,
+    sourceConn: input.sourceConn ?? null,
+    destConn: input.destConn ?? null,
     config: JSON.stringify(input.config),
     state: "IDLE",
     port: input.port,
@@ -97,9 +101,9 @@ export function createMigration(input: CreateMigrationInput): Migration {
   };
   getDb()
     .prepare(
-      `INSERT INTO migrations (id, name, sourceUri, destUri, config, state, port, pid,
+      `INSERT INTO migrations (id, name, sourceUri, destUri, sourceConn, destConn, config, state, port, pid,
          desiredRunning, supervisionStatus, restartCount, lastExitCode, lastRestartAt, stopped, plannedTotalBytes, createdAt, updatedAt)
-       VALUES (@id, @name, @sourceUri, @destUri, @config, @state, @port, @pid,
+       VALUES (@id, @name, @sourceUri, @destUri, @sourceConn, @destConn, @config, @state, @port, @pid,
          @desiredRunning, @supervisionStatus, @restartCount, @lastExitCode, @lastRestartAt, @stopped, @plannedTotalBytes, @createdAt, @updatedAt)`
     )
     .run(migration);
