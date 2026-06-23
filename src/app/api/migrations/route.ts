@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration, getSetting, getLatestMetric } from "@/lib/db";
+import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration, getSetting, getLatestMetric, getRecentMetrics } from "@/lib/db";
+import { computeMigrationProgress, toProgressGlimpse } from "@/lib/progress";
 import { spawnMongosync, sendCommand, killMongosync, readStartupFailure, type ProgressResponse } from "@/lib/process-manager";
 import { buildStartBody } from "@/lib/config-generator";
 import { startPoller } from "@/lib/poller";
@@ -16,9 +17,18 @@ export async function GET() {
   // lag, and canCommit at a glance without each card fetching live /progress itself.
   const migrations = getAllMigrations().map((m) => {
     const latest = getLatestMetric(m.id);
+    // Phase-aware glimpse (phase + ETA) from the last few metrics, so the card can show
+    // "Copying · 44% · ~12m left" without fetching the full series or live /progress.
+    const recent = latest ? getRecentMetrics(m.id, 6) : [];
+    const progress = latest
+      ? toProgressGlimpse(
+          computeMigrationProgress(recent, m.state, { plannedTotalBytes: m.plannedTotalBytes })
+        )
+      : null;
     return {
       ...m,
       copyProgress: latest?.copyProgress ?? null,
+      progress,
       live: latest
         ? {
             copyProgress: latest.copyProgress,

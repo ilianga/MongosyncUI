@@ -177,6 +177,18 @@ export function getLatestMetric(migrationId: string): Metric | undefined {
     .get(migrationId) as Metric | undefined;
 }
 
+/**
+ * Return the most recent `n` metrics in chronological (ascending) order. Used by the card
+ * enrichment to compute a phase-aware progress glimpse (copy throughput / lag trend) without
+ * loading the full series.
+ */
+export function getRecentMetrics(migrationId: string, n: number): Metric[] {
+  const rows = getDb()
+    .prepare("SELECT * FROM metrics WHERE migrationId = ? ORDER BY timestamp DESC LIMIT ?")
+    .all(migrationId, n) as Metric[];
+  return rows.reverse();
+}
+
 export function getMetrics(migrationId: string, since?: number): Metric[] {
   if (since !== undefined) {
     return getDb()
