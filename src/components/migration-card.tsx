@@ -110,6 +110,15 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
           />
           <Cell label="Src ping" value={live.sourcePingMs != null ? `${live.sourcePingMs} ms` : "—"} />
           <Cell label="Dst ping" value={live.destPingMs != null ? `${live.destPingMs} ms` : "—"} />
+          {live.cpuPercent != null && (
+            <Cell
+              label="CPU"
+              value={`${live.cpuPercent.toFixed(1)}%`}
+              tone={live.cpuPercent >= 90 ? "warn" : undefined}
+            />
+          )}
+          {live.rssBytes != null && <Cell label="Memory" value={formatBytes(live.rssBytes)} />}
+          {live.uptimeSec != null && <Cell label="Uptime" value={formatDuration(live.uptimeSec)} />}
         </div>
       )}
 

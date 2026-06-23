@@ -124,6 +124,10 @@ export interface MigrationLive {
   estimatedTotalBytes: number;
   sourcePingMs: number | null;
   destPingMs: number | null;
+  /** OS-level process metrics for the mongosync child (null when unavailable). */
+  cpuPercent: number | null;
+  rssBytes: number | null;
+  uptimeSec: number | null;
   updatedAt: number;
 }
 
@@ -151,6 +155,10 @@ export interface Metric {
   totalIndexesToBuild: number;
   sourcePingMs: number | null;
   destPingMs: number | null;
+  /** OS-level process metrics for the mongosync child (null when unavailable). */
+  cpuPercent: number | null;
+  rssBytes: number | null;
+  uptimeSec: number | null;
   timestamp: number;
 }
 

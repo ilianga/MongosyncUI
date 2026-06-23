@@ -14,6 +14,35 @@ import { PreCommitDialog } from "@/components/pre-commit-dialog";
 import type { Migration, Metric } from "@/lib/types";
 import type { ProgressResponse } from "@/lib/process-manager";
 import type { IndexBuild } from "@/lib/index-builds";
+import { formatBytes, formatDuration } from "@/lib/format";
+
+// One labelled process-resource stat cell.
+function ProcStat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={`mt-0.5 font-mono text-sm ${warn ? "text-amber-600 dark:text-amber-400" : ""}`}>{value}</p>
+    </div>
+  );
+}
+
+// Compact OS-level process resource stats from the latest polled metric.
+function ResourceStatsRow({ metric }: { metric: Metric | undefined }) {
+  if (!metric || (metric.cpuPercent == null && metric.rssBytes == null && metric.uptimeSec == null)) {
+    return null;
+  }
+  return (
+    <div className="grid grid-cols-3 gap-4 rounded-md border border-border/60 p-4">
+      <ProcStat
+        label="Process CPU"
+        value={metric.cpuPercent != null ? `${metric.cpuPercent.toFixed(1)}%` : "—"}
+        warn={metric.cpuPercent != null && metric.cpuPercent >= 90}
+      />
+      <ProcStat label="Process Memory" value={metric.rssBytes != null ? formatBytes(metric.rssBytes) : "—"} />
+      <ProcStat label="Process Uptime" value={metric.uptimeSec != null ? formatDuration(metric.uptimeSec) : "—"} />
+    </div>
+  );
+}
 
 export default function MigrationDetailPage() {
   const params = useParams<{ id: string }>();
@@ -119,6 +148,7 @@ export default function MigrationDetailPage() {
             }}>Retry</Button>
           </div>
         )}
+        <ResourceStatsRow metric={metrics.length ? metrics[metrics.length - 1] : undefined} />
         <ProgressPanel
           data={progress}
           plannedTotalBytes={migration.plannedTotalBytes}

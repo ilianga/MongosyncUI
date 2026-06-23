@@ -39,6 +39,9 @@ export function getDb(): Database.Database {
       totalIndexesToBuild INTEGER NOT NULL DEFAULT 0,
       sourcePingMs REAL,
       destPingMs REAL,
+      cpuPercent REAL,
+      rssBytes INTEGER,
+      uptimeSec INTEGER,
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_metrics_migration ON metrics(migrationId, timestamp);
@@ -71,6 +74,15 @@ function migrateSchema(database: Database.Database): void {
   );
   if (!metricCols.has("canCommit")) {
     database.exec("ALTER TABLE metrics ADD COLUMN canCommit INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!metricCols.has("cpuPercent")) {
+    database.exec("ALTER TABLE metrics ADD COLUMN cpuPercent REAL");
+  }
+  if (!metricCols.has("rssBytes")) {
+    database.exec("ALTER TABLE metrics ADD COLUMN rssBytes INTEGER");
+  }
+  if (!metricCols.has("uptimeSec")) {
+    database.exec("ALTER TABLE metrics ADD COLUMN uptimeSec INTEGER");
   }
 }
 
@@ -132,10 +144,10 @@ export function insertMetric(input: MetricInput): void {
     .prepare(
       `INSERT INTO metrics (migrationId, state, copyProgress, canCommit, estimatedCopiedBytes, estimatedTotalBytes,
          lagTimeSeconds, totalEventsApplied, estimatedSecondsToCEACatchup, indexesBuilt, totalIndexesToBuild,
-         sourcePingMs, destPingMs, timestamp)
+         sourcePingMs, destPingMs, cpuPercent, rssBytes, uptimeSec, timestamp)
        VALUES (@migrationId, @state, @copyProgress, @canCommit, @estimatedCopiedBytes, @estimatedTotalBytes,
          @lagTimeSeconds, @totalEventsApplied, @estimatedSecondsToCEACatchup, @indexesBuilt, @totalIndexesToBuild,
-         @sourcePingMs, @destPingMs, @timestamp)`
+         @sourcePingMs, @destPingMs, @cpuPercent, @rssBytes, @uptimeSec, @timestamp)`
     )
     .run({ ...input, timestamp: Date.now() });
 }

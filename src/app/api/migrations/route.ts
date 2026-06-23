@@ -28,6 +28,9 @@ export async function GET() {
             estimatedTotalBytes: latest.estimatedTotalBytes,
             sourcePingMs: latest.sourcePingMs,
             destPingMs: latest.destPingMs,
+            cpuPercent: latest.cpuPercent,
+            rssBytes: latest.rssBytes,
+            uptimeSec: latest.uptimeSec,
             updatedAt: latest.timestamp,
           }
         : null,

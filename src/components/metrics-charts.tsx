@@ -142,6 +142,21 @@ export function MetricsCharts({ metrics }: { metrics: Metric[] }) {
         color="#B45AF2"
         gradientId="grad-estimatedCopiedBytes"
       />
+      <Chart
+        data={metrics}
+        dataKey="cpuPercent"
+        label="Process CPU %"
+        color="#FF6960"
+        unit="%"
+        gradientId="grad-cpuPercent"
+      />
+      <Chart
+        data={metrics}
+        dataKey="rssBytes"
+        label="Process Memory (RSS)"
+        color="#0498EC"
+        gradientId="grad-rssBytes"
+      />
     </div>
   );
 }

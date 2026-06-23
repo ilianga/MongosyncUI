@@ -6,6 +6,7 @@ import { sessionName, sessionExists, killSession } from "./tmux";
 import { classifyTick } from "./health-monitor";
 import { getSupervisionConfig } from "./supervision-config";
 import { buildStartBody } from "./config-generator";
+import { getProcessStats } from "./resource-stats";
 import type { MetricInput, MongosyncState, Migration } from "./types";
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -44,6 +45,11 @@ export function progressToMetric(
     totalIndexesToBuild: p?.indexBuilding?.totalIndexesToBuild ?? 0,
     sourcePingMs: p?.source?.pingLatencyMs ?? null,
     destPingMs: p?.destination?.pingLatencyMs ?? null,
+    // OS-level process metrics are merged in by probe() from getProcessStats();
+    // default to null here so a plain progressToMetric result stays a valid MetricInput.
+    cpuPercent: null,
+    rssBytes: null,
+    uptimeSec: null,
   };
 }
 
@@ -70,7 +76,9 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
     }
 
     if (liveState && liveState !== m.state) updateMigration(m.id, { state: liveState });
-    insertMetric(progressToMetric(m.id, resp, m.plannedTotalBytes));
+    // Best-effort OS-level resource metrics; null result leaves the fields unset.
+    const stats = await getProcessStats(m);
+    insertMetric({ ...progressToMetric(m.id, resp, m.plannedTotalBytes), ...(stats ?? {}) });
   } catch {
     if (!m.desiredRunning) return; // not supervised → nothing to rescue
     const name = sessionName(m.id);

@@ -9,10 +9,13 @@ const supervisor = { reconcile: vi.fn(), readWrapperStatus: vi.fn(() => null) };
 const tmux = { sessionName: (id: string) => `msync-${id}`, sessionExists: vi.fn(() => true), killSession: vi.fn() };
 const pm = { fetchProgress: vi.fn(), sendCommand: vi.fn(), isProcessAlive: vi.fn(() => true) };
 
+const resourceStats = { getProcessStats: vi.fn(async () => null) };
+
 vi.mock("@/lib/supervisor", () => supervisor);
 vi.mock("@/lib/tmux", () => tmux);
 vi.mock("@/lib/process-manager", () => pm);
 vi.mock("@/lib/config-generator", () => ({ buildStartBody: () => ({ source: "cluster0", destination: "cluster1" }) }));
+vi.mock("@/lib/resource-stats", () => resourceStats);
 
 let dir: string, prevEnv: string | undefined;
 beforeEach(() => {
@@ -20,6 +23,8 @@ beforeEach(() => {
   prevEnv = process.env.MONGOSYNC_UI_DIR; process.env.MONGOSYNC_UI_DIR = dir;
   vi.resetModules();
   [supervisor.reconcile, pm.fetchProgress, pm.sendCommand, tmux.killSession].forEach((f) => f.mockReset());
+  resourceStats.getProcessStats.mockReset();
+  resourceStats.getProcessStats.mockResolvedValue(null);
   tmux.sessionExists.mockReturnValue(true);
 });
 afterEach(() => { process.env.MONGOSYNC_UI_DIR = prevEnv; fs.rmSync(dir, { recursive: true, force: true }); });
@@ -129,6 +134,14 @@ describe("progressToMetric", () => {
     expect(m.copyProgress).toBe(0);
     expect(m.indexesBuilt).toBe(0);
     expect(m.sourcePingMs).toBeNull();
+  });
+
+  it("defaults the OS resource fields to null (merged in later by probe)", async () => {
+    const { progressToMetric } = await load();
+    const m = progressToMetric("mig1", sample);
+    expect(m.cpuPercent).toBeNull();
+    expect(m.rssBytes).toBeNull();
+    expect(m.uptimeSec).toBeNull();
   });
 
   it("records canCommit as 1/0", async () => {
