@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { StateBadge } from "@/components/state-badge";
@@ -14,10 +14,60 @@ import { MetricsCharts } from "@/components/metrics-charts";
 import { LogsPanel } from "@/components/logs-panel";
 import { PreflightReportView } from "@/components/preflight-report";
 import { PreCommitDialog } from "@/components/pre-commit-dialog";
+import { ErrorBoundary } from "@/components/error-boundary";
+import { usePolling } from "@/hooks/use-polling";
+import { toast } from "sonner";
 import type { Migration, Metric } from "@/lib/types";
 import type { ProgressResponse } from "@/lib/process-manager";
 import type { IndexBuild } from "@/lib/index-builds";
 import { formatBytes, formatDuration } from "@/lib/format";
+
+// Raised by the fetcher when the migration no longer exists (404), so the page
+// can redirect home instead of showing a generic error.
+class MigrationNotFoundError extends Error {
+  constructor() {
+    super("Migration not found");
+    this.name = "MigrationNotFoundError";
+  }
+}
+
+interface DetailData {
+  migration: Migration;
+  metrics: Metric[];
+  progress: ProgressResponse | null;
+  indexBuilds: IndexBuild[] | null;
+}
+
+async function fetchDetail(id: string, signal: AbortSignal): Promise<DetailData> {
+  const [migRes, metRes, progRes] = await Promise.all([
+    fetch(`/api/migrations/${id}`, { signal }),
+    fetch(`/api/metrics/${id}`, { signal }),
+    fetch(`/api/migrations/${id}/progress`, { signal }),
+  ]);
+  if (migRes.status === 404) throw new MigrationNotFoundError();
+  if (!migRes.ok) throw new Error(`Failed to load migration (${migRes.status})`);
+
+  const migration: Migration = await migRes.json();
+  const metrics: Metric[] = metRes.ok ? await metRes.json() : [];
+  const progress: ProgressResponse | null = progRes.ok ? await progRes.json() : null;
+
+  // Only probe the destination for in-progress index builds while building is active
+  // (mongosync reports more indexes to build than completed) — avoids a mongosh spawn
+  // every tick the rest of the time.
+  const idx = progress?.progress?.indexBuilding;
+  const building = !!idx && (idx.totalIndexesToBuild ?? 0) > (idx.indexesBuilt ?? 0);
+  let indexBuilds: IndexBuild[] | null = [];
+  if (building) {
+    try {
+      const ib = await (await fetch(`/api/migrations/${id}/index-builds`, { signal })).json();
+      indexBuilds = ib.available ? (ib.builds as IndexBuild[]) : null;
+    } catch {
+      indexBuilds = null;
+    }
+  }
+
+  return { migration, metrics, progress, indexBuilds };
+}
 
 // Small section label used to separate the detail page's stacked panels.
 function SectionHeading({ children }: { children: React.ReactNode }) {
@@ -57,50 +107,55 @@ function ResourceStatsRow({ metric }: { metric: Metric | undefined }) {
 export default function MigrationDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const [migration, setMigration] = useState<Migration | null>(null);
-  const [metrics, setMetrics] = useState<Metric[]>([]);
-  const [progress, setProgress] = useState<ProgressResponse | null>(null);
-  const [indexBuilds, setIndexBuilds] = useState<IndexBuild[] | null | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
+  const id = params.id;
   const [commitOpen, setCommitOpen] = useState(false);
 
-  const fetchData = async () => {
-    try {
-      const [migRes, metRes, progRes] = await Promise.all([
-        fetch(`/api/migrations/${params.id}`),
-        fetch(`/api/metrics/${params.id}`),
-        fetch(`/api/migrations/${params.id}/progress`),
-      ]);
-      if (!migRes.ok) { router.push("/"); return; }
-      setMigration(await migRes.json());
-      setMetrics(await metRes.json());
-      const prog: ProgressResponse | null = progRes.ok ? await progRes.json() : null;
-      setProgress(prog);
+  const fetcher = useCallback(
+    (signal: AbortSignal) => fetchDetail(id, signal),
+    [id],
+  );
+  const { data, error, loading, refresh } = usePolling<DetailData>(fetcher, {
+    intervalMs: 5000,
+  });
 
-      // Only probe the destination for in-progress index builds while building is active
-      // (mongosync reports more indexes to build than completed) — avoids a mongosh spawn
-      // every tick the rest of the time.
-      const idx = prog?.progress?.indexBuilding;
-      const building = !!idx && (idx.totalIndexesToBuild ?? 0) > (idx.indexesBuilt ?? 0);
-      if (building) {
-        try {
-          const ib = await (await fetch(`/api/migrations/${params.id}/index-builds`)).json();
-          setIndexBuilds(ib.available ? (ib.builds as IndexBuild[]) : null);
-        } catch { setIndexBuilds(null); }
-      } else {
-        setIndexBuilds([]);
-      }
-    } catch { /* ignore */ } finally { setLoading(false); }
-  };
+  const refreshNow = useCallback(() => {
+    void refresh();
+  }, [refresh]);
 
+  // Redirect home when the migration was deleted/never existed.
   useEffect(() => {
-    fetchData();
-    const t = setInterval(fetchData, 5000);
-    return () => clearInterval(t);
-  }, [params.id]);
+    if (error instanceof MigrationNotFoundError) router.push("/");
+  }, [error, router]);
 
-  if (loading) return <p className="text-muted-foreground">Loading...</p>;
-  if (!migration) return <p className="text-muted-foreground">Migration not found.</p>;
+  // Surface transient refresh failures once, keeping the last good render.
+  const notifiedRef = useRef(false);
+  useEffect(() => {
+    if (error && !(error instanceof MigrationNotFoundError)) {
+      if (!notifiedRef.current && data) {
+        notifiedRef.current = true;
+        toast.error("Couldn't refresh migration", { description: error.message });
+      }
+    } else {
+      notifiedRef.current = false;
+    }
+  }, [error, data]);
+
+  if (loading && !data) return <p className="text-muted-foreground">Loading...</p>;
+  if (error instanceof MigrationNotFoundError || !data) {
+    if (error && !(error instanceof MigrationNotFoundError)) {
+      return (
+        <div className="space-y-3">
+          <p className="text-sm text-destructive">Couldn&apos;t load this migration.</p>
+          <p className="text-xs text-muted-foreground">{error.message}</p>
+          <Button variant="outline" onClick={refreshNow}>Retry</Button>
+        </div>
+      );
+    }
+    return <p className="text-muted-foreground">Migration not found.</p>;
+  }
+
+  const { migration, metrics, progress, indexBuilds } = data;
+  const fetchData = refreshNow;
 
   const liveSource = progress?.progress?.directionMapping?.Source;
   const liveDest = progress?.progress?.directionMapping?.Destination;
@@ -179,18 +234,24 @@ export default function MigrationDetailPage() {
             }}>Retry</Button>
           </div>
         )}
-        <MigrationProgress
-          metrics={metrics}
-          state={migration.state}
-          plannedTotalBytes={migration.plannedTotalBytes}
-        />
+        <ErrorBoundary label="Progress">
+          <MigrationProgress
+            metrics={metrics}
+            state={migration.state}
+            plannedTotalBytes={migration.plannedTotalBytes}
+          />
+        </ErrorBoundary>
         <ResourceStatsRow metric={metrics.length ? metrics[metrics.length - 1] : undefined} />
-        <ProgressPanel
-          data={progress}
-          plannedTotalBytes={migration.plannedTotalBytes}
-          indexBuilds={indexBuilds === undefined ? undefined : indexBuilds}
-        />
-        <VerificationPanel verification={progress?.progress?.verification} />
+        <ErrorBoundary label="Progress details">
+          <ProgressPanel
+            data={progress}
+            plannedTotalBytes={migration.plannedTotalBytes}
+            indexBuilds={indexBuilds}
+          />
+        </ErrorBoundary>
+        <ErrorBoundary label="Verification">
+          <VerificationPanel verification={progress?.progress?.verification} />
+        </ErrorBoundary>
         <section className="space-y-3">
           <SectionHeading>Preflight</SectionHeading>
           <PreflightReportView
@@ -199,11 +260,15 @@ export default function MigrationDetailPage() {
         </section>
         <section className="space-y-3">
           <SectionHeading>Metrics</SectionHeading>
-          <MetricsCharts metrics={metrics} />
+          <ErrorBoundary label="Metrics charts">
+            <MetricsCharts metrics={metrics} />
+          </ErrorBoundary>
         </section>
         <section className="space-y-3">
           <SectionHeading>Logs</SectionHeading>
-          <LogsPanel migrationId={migration.id} />
+          <ErrorBoundary label="Logs">
+            <LogsPanel migrationId={migration.id} />
+          </ErrorBoundary>
         </section>
       </div>
 

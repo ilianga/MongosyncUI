@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Topbar } from "@/components/app-shell/topbar";
+import { usePolling } from "@/hooks/use-polling";
 import { toast } from "sonner";
 
 interface Settings {
@@ -45,13 +46,30 @@ export default function SettingsPage() {
   const [cred, setCred] = useState({ currentPassword: "", username: "admin", password: "" });
   const [savingCred, setSavingCred] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/settings").then((r) => r.json()).then((data) => {
-      setS({ ...DEFAULTS, ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== "")) });
-    }).catch(() => {});
+  // One-shot loads (no interval) via usePolling: gives us abort-on-unmount and a
+  // settled loading state. State is seeded inside the async fetcher (not a
+  // synchronous setState in an effect), so the React Compiler lint rule is happy.
+  // The editable form (`s`) diverges from server state after edits, so it lives
+  // in its own state rather than being bound to the hook's `data`.
+  const loadSettings = useCallback(async (signal: AbortSignal) => {
+    const res = await fetch("/api/settings", { signal });
+    if (!res.ok) throw new Error(`Failed to load settings (${res.status})`);
+    const data = await res.json();
+    if (signal.aborted) return null;
+    setS({ ...DEFAULTS, ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== "")) });
+    return null;
   }, []);
+  usePolling(loadSettings, { intervalMs: 0 });
 
-  useEffect(() => { fetch("/api/supervision").then((r) => r.json()).then(setBoot).catch(() => {}); }, []);
+  const loadBoot = useCallback(async (signal: AbortSignal) => {
+    const res = await fetch("/api/supervision", { signal });
+    if (!res.ok) throw new Error(`Failed to load supervision status (${res.status})`);
+    const data = await res.json();
+    if (signal.aborted) return null;
+    setBoot(data);
+    return null;
+  }, []);
+  usePolling(loadBoot, { intervalMs: 0 });
 
   const set = (k: keyof Settings) => (v: string) => setS((prev) => ({ ...prev, [k]: v }));
 

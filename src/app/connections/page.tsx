@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useForm } from "react-hook-form";
 import { nanoid } from "nanoid";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,15 @@ import { connToConfig, configToConnForm, type MigrationFormValues } from "@/lib/
 import { CONNECTION_COLORS, DEFAULT_CONNECTION_COLOR, resolveConnectionColor } from "@/lib/colors";
 import { maskUri } from "@/lib/format";
 import type { SavedConnection } from "@/lib/types";
+import { usePolling } from "@/hooks/use-polling";
 import { toast } from "sonner";
+
+async function fetchConnections(signal: AbortSignal): Promise<SavedConnection[]> {
+  const res = await fetch("/api/connections", { signal });
+  if (!res.ok) throw new Error(`Failed to load connections (${res.status})`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
 
 const emptyConn = {
   raw: "", scheme: "mongodb" as const, hosts: "", authMethod: "none" as const,
@@ -50,7 +58,6 @@ function summarize(c: SavedConnection): string {
 }
 
 export default function ConnectionsPage() {
-  const [connections, setConnections] = useState<SavedConnection[]>([]);
   const [editing, setEditing] = useState<SavedConnection | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -64,13 +71,16 @@ export default function ConnectionsPage() {
 
   const form = useForm<MigrationFormValues>({ defaultValues: formDefaults });
 
-  const load = () => {
-    fetch("/api/connections")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: SavedConnection[]) => setConnections(Array.isArray(data) ? data : []))
-      .catch(() => {});
-  };
-  useEffect(() => { load(); }, []);
+  // One-shot load (no interval) with abort-on-unmount; refreshed manually after
+  // create/update/delete via `load`.
+  const { data, error: loadError, loading, refresh } = usePolling<SavedConnection[]>(
+    fetchConnections,
+    { intervalMs: 0 },
+  );
+  const connections = data ?? [];
+  const load = useCallback(() => {
+    void refresh();
+  }, [refresh]);
 
   const openCreate = () => {
     setEditing(null);
@@ -154,7 +164,16 @@ export default function ConnectionsPage() {
             {!showForm && <Button onClick={openCreate}>New connection</Button>}
           </CardHeader>
           <CardContent className="space-y-3">
-            {connections.length === 0 && !showForm && (
+            {loading && connections.length === 0 && (
+              <p className="text-sm text-muted-foreground">Loading connections…</p>
+            )}
+            {!loading && loadError && connections.length === 0 && (
+              <div className="space-y-2">
+                <p className="text-sm text-destructive">Couldn&apos;t load connections.</p>
+                <Button variant="outline" size="sm" onClick={load}>Retry</Button>
+              </div>
+            )}
+            {!loading && !error && connections.length === 0 && !showForm && (
               <p className="text-sm text-muted-foreground">No saved connections yet.</p>
             )}
             {connections.map((c) => (
