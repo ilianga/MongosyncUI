@@ -16,6 +16,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ConnectionBuilder } from "./connection-builder";
 import { NamespaceFilterFields } from "./namespace-filter-fields";
+import { PreflightReportView, type PreflightReport } from "./preflight-report";
 import { useRouter } from "next/navigation";
 import { useState, useRef } from "react";
 import { nanoid } from "nanoid";
@@ -43,6 +44,11 @@ export function MigrationForm() {
   // and prompt the user to drop it and retry instead of failing with a raw timeout.
   const [staleState, setStaleState] = useState<MigrationFormValues | null>(null);
   const [dropping, setDropping] = useState(false);
+  // Preflight: the last report (shown inline) and, when it's warn-only, the values we
+  // hold so the user can confirm "Create anyway". A `fail` report blocks submission.
+  const [preflight, setPreflight] = useState<PreflightReport | null>(null);
+  const [preflightRunning, setPreflightRunning] = useState(false);
+  const [warnConfirm, setWarnConfirm] = useState<MigrationFormValues | null>(null);
   // Single cert-staging token shared by both clusters' uploads, submitted on create so the
   // server moves staged PEMs into the migration's permanent cert dir.
   const tokenRef = useRef(nanoid());
@@ -82,7 +88,39 @@ export function MigrationForm() {
     return { ok: res.ok, code: data?.code as string | undefined, error: data?.error as string | undefined };
   };
 
-  const onSubmit = async (values: MigrationFormValues) => {
+  // Run the preflight readiness check for the current form values.
+  const runPreflight = async (values: MigrationFormValues): Promise<PreflightReport | null> => {
+    setPreflightRunning(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceConn: connToConfig(values.source),
+          destConn: connToConfig(values.dest),
+          config: formValuesToConfig(values),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Preflight failed");
+      setPreflight(data as PreflightReport);
+      return data as PreflightReport;
+    } catch (err) {
+      setError((err as Error).message);
+      return null;
+    } finally {
+      setPreflightRunning(false);
+    }
+  };
+
+  // Manual "Run preflight" button — just shows the report inline, doesn't submit.
+  const onRunPreflight = async () => {
+    await runPreflight(form.getValues());
+  };
+
+  // The actual create call, used after preflight passes or the user confirms warnings.
+  const doCreate = async (values: MigrationFormValues) => {
     setSubmitting(true);
     setError(null);
     try {
@@ -95,6 +133,16 @@ export function MigrationForm() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // Create & Start: run preflight first. fail → block (show report); warn-only → ask to
+  // "Create anyway"; pass → create directly.
+  const onSubmit = async (values: MigrationFormValues) => {
+    const report = await runPreflight(values);
+    if (!report) return; // preflight request errored; message already shown
+    if (report.overall === "fail") return; // blocked; report is displayed inline
+    if (report.overall === "warn") { setWarnConfirm(values); return; }
+    await doCreate(values);
   };
 
   // User confirmed dropping leftover sync state on the destination — drop it, then retry.
@@ -233,6 +281,14 @@ export function MigrationForm() {
         </Collapsible>
       </div>
 
+      {/* ── Preflight ── */}
+      {preflight && (
+        <div className={sectionClass}>
+          <p className={sectionHeaderClass}>Preflight readiness</p>
+          <PreflightReportView report={preflight} />
+        </div>
+      )}
+
       {/* ── Sticky Submit Bar ── */}
       <div className="sticky bottom-0 -mx-0 mt-2 border-t border-border bg-background/80 py-3 backdrop-blur">
         {error && (
@@ -240,9 +296,30 @@ export function MigrationForm() {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <Button type="submit" disabled={submitting || (reversible && hasFilters)} className="w-full">
-          {submitting ? "Creating..." : "Create & Start Migration"}
-        </Button>
+        {preflight?.overall === "fail" && (
+          <Alert variant="destructive" className="mb-3">
+            <AlertDescription>
+              Preflight found blocking issues. Resolve them above, then create the migration.
+            </AlertDescription>
+          </Alert>
+        )}
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onRunPreflight}
+            disabled={preflightRunning || submitting || (reversible && hasFilters)}
+          >
+            {preflightRunning ? "Running…" : "Run preflight"}
+          </Button>
+          <Button
+            type="submit"
+            disabled={submitting || preflightRunning || (reversible && hasFilters)}
+            className="flex-1"
+          >
+            {submitting ? "Creating..." : preflightRunning ? "Checking..." : "Create & Start Migration"}
+          </Button>
+        </div>
       </div>
     </form>
 
@@ -266,6 +343,33 @@ export function MigrationForm() {
           </Button>
           <Button variant="destructive" onClick={confirmDropAndRetry} disabled={dropping}>
             {dropping ? "Dropping..." : "Drop & retry"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={warnConfirm !== null} onOpenChange={(v) => { if (!v && !submitting) setWarnConfirm(null); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Preflight warnings</DialogTitle>
+          <DialogDescription>
+            Preflight passed but raised warnings. Review them above. You can create the migration
+            anyway, or cancel and address them first.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setWarnConfirm(null)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              const v = warnConfirm;
+              setWarnConfirm(null);
+              if (v) void doCreate(v);
+            }}
+            disabled={submitting}
+          >
+            {submitting ? "Creating..." : "Create anyway"}
           </Button>
         </DialogFooter>
       </DialogContent>
