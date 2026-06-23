@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { StateBadge } from "@/components/state-badge";
 import { SupervisionBadge } from "@/components/supervision-badge";
@@ -15,6 +16,13 @@ import type { Migration, Metric } from "@/lib/types";
 import type { ProgressResponse } from "@/lib/process-manager";
 import type { IndexBuild } from "@/lib/index-builds";
 import { formatBytes, formatDuration } from "@/lib/format";
+
+// Small section label used to separate the detail page's stacked panels.
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{children}</h2>
+  );
+}
 
 // One labelled process-resource stat cell.
 function ProcStat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
@@ -100,7 +108,26 @@ export default function MigrationDetailPage() {
   return (
     <>
       {/* Sticky detail header */}
-      <div className="sticky top-0 z-10 -mx-6 border-b border-border bg-background/80 px-6 py-3 backdrop-blur">
+      <div className="sticky top-0 z-10 -mx-6 -mt-6 border-b border-border bg-background/80 px-6 py-3 backdrop-blur-md">
+        <Link
+          href="/"
+          className="mb-1.5 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="size-3.5"
+            aria-hidden
+          >
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+          Migrations
+        </Link>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-0.5">
             <div className="flex items-center gap-2.5">
@@ -155,8 +182,14 @@ export default function MigrationDetailPage() {
           indexBuilds={indexBuilds === undefined ? undefined : indexBuilds}
         />
         <VerificationPanel verification={progress?.progress?.verification} />
-        <MetricsCharts metrics={metrics} />
-        <LogsPanel migrationId={migration.id} />
+        <section className="space-y-3">
+          <SectionHeading>Metrics</SectionHeading>
+          <MetricsCharts metrics={metrics} />
+        </section>
+        <section className="space-y-3">
+          <SectionHeading>Logs</SectionHeading>
+          <LogsPanel migrationId={migration.id} />
+        </section>
       </div>
 
       <PreCommitDialog

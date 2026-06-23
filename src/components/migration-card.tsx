@@ -41,11 +41,13 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
   const canCommit = live?.canCommit ?? false;
 
   return (
-    <Card className="overflow-hidden p-5 transition-colors hover:border-primary/40">
+    <Card className="group gap-0 p-5 transition-all hover:ring-primary/40 hover:shadow-sm">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <Link href={`/migrations/${migration.id}`} className="min-w-0">
-          <h3 className="truncate text-lg font-semibold leading-tight hover:underline">{migration.name}</h3>
+          <h3 className="truncate text-lg font-semibold leading-tight decoration-primary/40 underline-offset-4 group-hover:underline">
+            {migration.name}
+          </h3>
         </Link>
         <div className="flex shrink-0 items-center gap-1.5">
           <SupervisionBadge status={migration.supervisionStatus} />
