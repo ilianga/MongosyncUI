@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getSetting, setSetting } from "@/lib/db";
+import { z } from "zod";
+import { handle, jsonOk, readJson } from "@/lib/api";
 
 const KEYS = [
   "mongosyncPath",
@@ -14,18 +15,24 @@ const KEYS = [
   "crashLoopMax",
   "crashLoopWindowSec",
   "hungTicks",
-];
+] as const;
 
-export async function GET() {
+// Accept any object; unknown keys and non-string values are ignored on write (same
+// permissive behavior as before), but a non-object body is rejected as a 400.
+const settingsSchema = z.record(z.string(), z.unknown());
+
+export const GET = handle(async () => {
   const out: Record<string, string> = {};
   for (const k of KEYS) out[k] = getSetting(k) ?? "";
-  return NextResponse.json(out);
-}
+  return jsonOk(out);
+});
 
-export async function PUT(request: NextRequest) {
-  const body = await request.json();
+export const PUT = handle(async (request: Request) => {
+  const body = await readJson(request, settingsSchema);
   for (const [key, value] of Object.entries(body)) {
-    if (KEYS.includes(key) && typeof value === "string") setSetting(key, value);
+    if ((KEYS as readonly string[]).includes(key) && typeof value === "string") {
+      setSetting(key, value);
+    }
   }
-  return NextResponse.json({ ok: true });
-}
+  return jsonOk({ ok: true });
+});

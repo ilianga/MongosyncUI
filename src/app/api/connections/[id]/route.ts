@@ -1,40 +1,31 @@
-import { NextRequest, NextResponse } from "next/server";
 import {
   getSavedConnection,
   updateSavedConnection,
   deleteSavedConnection,
 } from "@/lib/db";
 import { savedConnectionUpdateSchema } from "@/lib/schemas";
+import { handle, jsonOk, readJson, ApiError } from "@/lib/api";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_request: NextRequest, { params }: Ctx) {
+export const GET = handle(async (_request: Request, { params }: Ctx) => {
   const { id } = await params;
   const conn = getSavedConnection(id);
-  if (!conn) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(conn);
-}
+  if (!conn) throw new ApiError("Not found", 404);
+  return jsonOk(conn);
+});
 
-export async function PUT(request: NextRequest, { params }: Ctx) {
+export const PUT = handle(async (request: Request, { params }: Ctx) => {
   const { id } = await params;
-  const body = await request.json().catch(() => null);
-  const parsed = savedConnectionUpdateSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid connection" },
-      { status: 400 }
-    );
-  }
-  const updated = updateSavedConnection(id, parsed.data);
-  if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(updated);
-}
+  const data = await readJson(request, savedConnectionUpdateSchema);
+  const updated = updateSavedConnection(id, data);
+  if (!updated) throw new ApiError("Not found", 404);
+  return jsonOk(updated);
+});
 
-export async function DELETE(_request: NextRequest, { params }: Ctx) {
+export const DELETE = handle(async (_request: Request, { params }: Ctx) => {
   const { id } = await params;
-  if (!getSavedConnection(id)) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!getSavedConnection(id)) throw new ApiError("Not found", 404);
   deleteSavedConnection(id);
-  return NextResponse.json({ ok: true });
-}
+  return jsonOk({ ok: true });
+});

@@ -1,14 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getMigration } from "@/lib/db";
 import { retrySupervision } from "@/lib/supervisor";
+import { handle, jsonOk, ApiError } from "@/lib/api";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+type Ctx = { params: Promise<{ id: string }> };
+
+export const POST = handle(async (_req: Request, { params }: Ctx) => {
   const { id } = await params;
-  if (!getMigration(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  try {
-    retrySupervision(id);
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
-  }
-}
+  if (!getMigration(id)) throw new ApiError("Not found", 404);
+  retrySupervision(id);
+  return jsonOk({ ok: true });
+});

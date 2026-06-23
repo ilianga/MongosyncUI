@@ -1,16 +1,14 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getMigration, updateMigration } from "@/lib/db";
 import { sendCommand } from "@/lib/process-manager";
+import { handle, jsonOk, ApiError } from "@/lib/api";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+type Ctx = { params: Promise<{ id: string }> };
+
+export const POST = handle(async (_req: Request, { params }: Ctx) => {
   const { id } = await params;
   const migration = getMigration(id);
-  if (!migration) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  try {
-    await sendCommand(migration.port, "resume");
-    updateMigration(id, { state: "RUNNING" });
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
-  }
-}
+  if (!migration) throw new ApiError("Not found", 404);
+  await sendCommand(migration.port, "resume");
+  updateMigration(id, { state: "RUNNING" });
+  return jsonOk({ ok: true });
+});

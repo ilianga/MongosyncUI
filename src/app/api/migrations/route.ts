@@ -1,4 +1,3 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration, getSetting, getLatestMetric, getRecentMetrics } from "@/lib/db";
 import { computeMigrationProgress, toProgressGlimpse } from "@/lib/progress";
 import { spawnMongosync, sendCommand, killMongosync, readStartupFailure, type ProgressResponse } from "@/lib/process-manager";
@@ -10,8 +9,11 @@ import { hasSyncState } from "@/lib/cluster-check";
 import { computeSourceTotalBytes } from "@/lib/source-stats";
 import { buildConnectionString, type ConnectionConfig } from "@/lib/connection";
 import { commitStagedCerts } from "@/lib/certs";
+import type { StartConfig } from "@/lib/types";
+import { z } from "zod";
+import { handle, jsonOk, jsonError, readJson, ApiError } from "@/lib/api";
 
-export async function GET() {
+export const GET = handle(async () => {
   initApp();
   // Attach the latest polled snapshot so the dashboard card can show a real progress bar,
   // lag, and canCommit at a glance without each card fetching live /progress itself.
@@ -48,28 +50,44 @@ export async function GET() {
         : null,
     };
   });
-  return NextResponse.json(migrations);
-}
+  return jsonOk(migrations);
+});
 
-export async function POST(request: NextRequest) {
+// Loose validation: the body accepts EITHER structured conns or legacy URI strings, plus
+// an optional config blob, so we only assert the shape of what we read directly.
+const createBodySchema = z.object({
+  name: z.string().min(1, "name is required"),
+  config: z.record(z.string(), z.unknown()).optional(),
+  token: z.string().optional(),
+  sourceConn: z.unknown().optional(),
+  destConn: z.unknown().optional(),
+  sourceUri: z.unknown().optional(),
+  destUri: z.unknown().optional(),
+});
+
+export const POST = handle(async (request: Request) => {
   initApp();
-  const body = await request.json();
+  const body = await readJson(request, createBodySchema);
   const { name, config, token } = body;
 
   // Accept EITHER structured { sourceConn, destConn } ConnectionConfigs OR legacy
   // { sourceUri, destUri } strings (treated as raw passthrough conns). Cert paths in
   // the structured conns still point at the staging area at this point.
   const sourceConn: ConnectionConfig =
-    body.sourceConn ?? (typeof body.sourceUri === "string" ? { raw: body.sourceUri } : {});
+    (body.sourceConn as ConnectionConfig) ??
+    (typeof body.sourceUri === "string" ? { raw: body.sourceUri } : {});
   const destConn: ConnectionConfig =
-    body.destConn ?? (typeof body.destUri === "string" ? { raw: body.destUri } : {});
+    (body.destConn as ConnectionConfig) ??
+    (typeof body.destUri === "string" ? { raw: body.destUri } : {});
 
   const basePort = Number(getSetting("basePort") || "27182");
   const used = new Set(getAllMigrations().map((m) => m.port));
   let port = basePort;
   while (used.has(port)) port++;
 
-  // Apply settings-level defaults only where the form left a field unset.
+  // Apply settings-level defaults only where the form left a field unset. The settings are
+  // free-form strings; the form's `config` is the validated source of truth, so we cast the
+  // merged result to StartConfig (same effective behavior as the previous untyped body).
   const merged = {
     verbosity: getSetting("defaultVerbosity") || undefined,
     loadLevel: getSetting("defaultLoadLevel") ? Number(getSetting("defaultLoadLevel")) : undefined,
@@ -77,7 +95,7 @@ export async function POST(request: NextRequest) {
     verificationEnabled:
       getSetting("defaultVerification") != null ? getSetting("defaultVerification") === "true" : undefined,
     ...(config ?? {}),
-  };
+  } as StartConfig;
 
   // Build provisional URIs (staging cert paths) so createMigration has the required
   // sourceUri/destUri; these are rewritten below once certs are committed to a stable dir.
@@ -140,8 +158,8 @@ export async function POST(request: NextRequest) {
       try {
         const res = await fetch(`http://localhost:${port}/api/v1/progress`);
         if (res.ok) {
-          const body = (await res.json().catch(() => ({}))) as ProgressResponse;
-          if (body.progress?.state === "IDLE") { ready = true; break; }
+          const progressBody = (await res.json().catch(() => ({}))) as ProgressResponse;
+          if (progressBody.progress?.state === "IDLE") { ready = true; break; }
         }
       } catch { /* not ready */ }
       await new Promise((r) => setTimeout(r, 500));
@@ -160,13 +178,10 @@ export async function POST(request: NextRequest) {
       if (!reason && !crashed) {
         try {
           if (await hasSyncState(destUri)) {
-            return NextResponse.json(
-              {
-                error:
-                  "The destination already has mongosync sync state (__mdb_internal_mongosync) from a previous run.",
-                code: "DEST_HAS_SYNC_STATE",
-              },
-              { status: 409 }
+            return jsonError(
+              "The destination already has mongosync sync state (__mdb_internal_mongosync) from a previous run.",
+              409,
+              { code: "DEST_HAS_SYNC_STATE" }
             );
           }
         } catch { /* mongosh unavailable — fall through to the generic error */ }
@@ -177,18 +192,21 @@ export async function POST(request: NextRequest) {
         : crashed
           ? "mongosync crash-looped on startup (see logs)"
           : "mongosync did not reach IDLE within 30s";
-      return NextResponse.json({ error: detail }, { status: 500 });
+      return jsonError(detail, 500);
     }
 
     const plannedTotalBytes = await plannedTotalPromise;
     await sendCommand(port, "start", buildStartBody(migration));
     updateMigration(migration.id, { state: "RUNNING", ...(plannedTotalBytes ? { plannedTotalBytes } : {}) });
     startPoller();
-    return NextResponse.json(getMigration(migration.id), { status: 201 });
+    return jsonOk(getMigration(migration.id), 201);
   } catch (error) {
+    // Spawn/start failed unexpectedly: tear down the half-created migration, then return
+    // an opaque error (the underlying message may embed a connection string).
     const latest = getMigration(migration.id);
     if (latest) killMongosync(latest);
     deleteMigration(migration.id);
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    if (error instanceof ApiError) throw error;
+    return jsonError("Failed to start migration", 500);
   }
-}
+});
