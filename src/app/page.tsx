@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { MigrationCard } from "@/components/migration-card";
 import { Topbar } from "@/components/app-shell/topbar";
@@ -11,10 +11,19 @@ import type { Migration } from "@/lib/types";
 
 function SkeletonCard() {
   return (
-    <div className="rounded-lg border border-border bg-card p-5 space-y-3">
-      <Skeleton className="h-4 w-2/3" />
-      <Skeleton className="h-2 w-full" />
-      <Skeleton className="h-8 w-full" />
+    <div className="space-y-3 rounded-xl bg-card p-5 ring-1 ring-foreground/10">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-4 w-2/5" />
+        <Skeleton className="h-5 w-16 rounded-full" />
+      </div>
+      <Skeleton className="h-3 w-3/4" />
+      <Skeleton className="h-1.5 w-full rounded-full" />
+      <div className="grid grid-cols-4 gap-3 pt-2">
+        <Skeleton className="h-8" />
+        <Skeleton className="h-8" />
+        <Skeleton className="h-8" />
+        <Skeleton className="h-8" />
+      </div>
     </div>
   );
 }
@@ -35,36 +44,48 @@ export default function DashboardPage() {
   const [migrations, setMigrations] = useState<Migration[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchMigrations = async () => {
+  const fetchMigrations = useCallback(async () => {
     try {
       setMigrations(await (await fetch("/api/migrations")).json());
-    } catch { /* ignore */ } finally { setLoading(false); }
-  };
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetchMigrations();
     const t = setInterval(fetchMigrations, 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [fetchMigrations]);
+
+  const count = migrations.length;
 
   return (
     <>
       <Topbar
         title="Migrations"
+        subtitle={
+          loading
+            ? "Loading…"
+            : count === 0
+              ? "No active migrations"
+              : `${count} migration${count === 1 ? "" : "s"}`
+        }
         action={
           <Link href="/migrations/new">
             <Button>+ New Migration</Button>
           </Link>
         }
       />
-      <div className="px-0 pt-6">
+      <div className="pt-4">
         {loading ? (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <SkeletonCard />
+          <div className="grid gap-5 lg:grid-cols-2">
             <SkeletonCard />
             <SkeletonCard />
           </div>
-        ) : migrations.length === 0 ? (
+        ) : count === 0 ? (
           <EmptyState
             icon={LeafIcon}
             title="No migrations yet"
@@ -76,7 +97,7 @@ export default function DashboardPage() {
             }
           />
         ) : (
-          <div className="grid gap-5 lg:grid-cols-2 animate-fade-in">
+          <div className="grid animate-fade-in gap-5 lg:grid-cols-2">
             {migrations.map((m) => (
               <MigrationCard key={m.id} migration={m} onAction={fetchMigrations} />
             ))}
