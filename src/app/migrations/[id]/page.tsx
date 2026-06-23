@@ -12,6 +12,7 @@ import { MigrationProgress } from "@/components/migration-progress";
 import { VerificationPanel } from "@/components/verification-panel";
 import { MetricsCharts } from "@/components/metrics-charts";
 import { LogsPanel } from "@/components/logs-panel";
+import { PreflightReportView } from "@/components/preflight-report";
 import { PreCommitDialog } from "@/components/pre-commit-dialog";
 import type { Migration, Metric } from "@/lib/types";
 import type { ProgressResponse } from "@/lib/process-manager";
@@ -105,6 +106,8 @@ export default function MigrationDetailPage() {
   const liveDest = progress?.progress?.directionMapping?.Destination;
   const sourceLabel = liveSource ?? migration.sourceUri;
   const destLabel = liveDest ?? migration.destUri;
+  let preflightConfig: Record<string, unknown> = {};
+  try { preflightConfig = JSON.parse(migration.config); } catch { /* keep {} */ }
 
   return (
     <>
@@ -188,6 +191,12 @@ export default function MigrationDetailPage() {
           indexBuilds={indexBuilds === undefined ? undefined : indexBuilds}
         />
         <VerificationPanel verification={progress?.progress?.verification} />
+        <section className="space-y-3">
+          <SectionHeading>Preflight</SectionHeading>
+          <PreflightReportView
+            input={{ sourceUri: migration.sourceUri, destUri: migration.destUri, config: preflightConfig }}
+          />
+        </section>
         <section className="space-y-3">
           <SectionHeading>Metrics</SectionHeading>
           <MetricsCharts metrics={metrics} />

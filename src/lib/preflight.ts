@@ -158,13 +158,16 @@ function tcpProbe(host: string, port: number, timeoutMs = 4000): Promise<boolean
 // authorized for connectionStatus showPrivileges) are caught per-field so a
 // partial result still comes back as JSON.
 const FACTS_EVAL = `
-(function () {
-  function safe(fn, dflt) { try { return fn(); } catch (e) { return dflt; } }
+(async function () {
+  // async-aware: mongosh rewrites DB calls to awaited promises, so a sync try/catch
+  // can't catch their throws. Awaiting fn() inside safe() catches both sync and async
+  // failures, which matters because preflight targets possibly-underprivileged users.
+  async function safe(fn, dflt) { try { return await fn(); } catch (e) { return dflt; } }
   var out = {};
-  out.pingOk = safe(function () { return db.adminCommand({ ping: 1 }).ok === 1; }, false);
-  out.version = safe(function () { return db.version(); }, null);
-  out.setName = safe(function () { return db.hello().setName || null; }, null);
-  var cs = safe(function () { return db.runCommand({ connectionStatus: 1, showPrivileges: true }); }, null);
+  out.pingOk = await safe(function () { return db.adminCommand({ ping: 1 }).ok === 1; }, false);
+  out.version = await safe(function () { return db.version(); }, null);
+  out.setName = await safe(function () { return db.hello().setName || null; }, null);
+  var cs = await safe(function () { return db.runCommand({ connectionStatus: 1, showPrivileges: true }); }, null);
   if (cs && cs.authInfo) {
     out.authenticated = (cs.authInfo.authenticatedUsers || []).length > 0;
     out.privileges = cs.authInfo.authenticatedUserPrivileges || [];
@@ -172,22 +175,23 @@ const FACTS_EVAL = `
   } else {
     out.authenticated = false; out.privileges = []; out.roles = [];
   }
-  out.userDatabases = safe(function () {
+  out.userDatabases = await safe(function () {
     var names = db.getMongo().getDBNames();
     var sys = { admin: 1, local: 1, config: 1 };
     return names.filter(function (n) {
       return !sys[n] && n.indexOf('__mdb_internal') !== 0;
     });
   }, []);
-  out.hasSyncState = safe(function () {
+  out.hasSyncState = await safe(function () {
     return db.getMongo().getDBNames().indexOf(${JSON.stringify(MONGOSYNC_STATE_DB)}) !== -1;
   }, false);
-  out.oplogWindowSec = safe(function () {
+  out.oplogWindowSec = await safe(function () {
     var oplog = db.getSiblingDB('local').oplog.rs;
     var first = oplog.find().sort({ $natural: 1 }).limit(1).next();
     var last = oplog.find().sort({ $natural: -1 }).limit(1).next();
+    // oplog ts is a BSON Timestamp; its .t field is seconds since epoch (no getTime()).
     if (!first || !last || !first.ts || !last.ts) return null;
-    return last.ts.getTime() - first.ts.getTime();
+    return last.ts.t - first.ts.t;
   }, null);
   return JSON.stringify(out);
 })()
