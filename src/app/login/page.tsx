@@ -1,14 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { toast } from "sonner";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -25,13 +24,17 @@ export default function LoginPage() {
         body: JSON.stringify({ username, password }),
       });
       if (!res.ok) {
-        setError((await res.json().catch(() => ({})))?.error || "Login failed");
+        const msg = (await res.json().catch(() => ({})))?.error || "Login failed";
+        setError(msg);
+        toast.error("Sign in failed", { description: msg });
         return;
       }
       // Full reload so middleware re-evaluates with the new cookie.
       window.location.assign("/");
     } catch (err) {
-      setError((err as Error).message);
+      const msg = (err as Error).message;
+      setError(msg);
+      toast.error("Sign in failed", { description: msg });
     } finally {
       setBusy(false);
     }

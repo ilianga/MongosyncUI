@@ -1,13 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { MigrationCard } from "@/components/migration-card";
 import { Topbar } from "@/components/app-shell/topbar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import Link from "next/link";
+import { toast } from "sonner";
+import { usePolling } from "@/hooks/use-polling";
 import type { Migration } from "@/lib/types";
+
+async function fetchMigrations(signal: AbortSignal): Promise<Migration[]> {
+  const res = await fetch("/api/migrations", { signal });
+  if (!res.ok) throw new Error(`Failed to load migrations (${res.status})`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
 
 function SkeletonCard() {
   return (
@@ -41,24 +50,25 @@ const LeafIcon = (
 );
 
 export default function DashboardPage() {
-  const [migrations, setMigrations] = useState<Migration[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, error, loading, refresh } = usePolling<Migration[]>(fetchMigrations, {
+    intervalMs: 5000,
+  });
+  const migrations = data ?? [];
 
-  const fetchMigrations = useCallback(async () => {
-    try {
-      setMigrations(await (await fetch("/api/migrations")).json());
-    } catch {
-      /* ignore */
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Surface a transient fetch failure once, but keep showing the last good data.
+  const notifiedRef = useRef(false);
   useEffect(() => {
-    fetchMigrations();
-    const t = setInterval(fetchMigrations, 5000);
-    return () => clearInterval(t);
-  }, [fetchMigrations]);
+    if (error && !notifiedRef.current) {
+      notifiedRef.current = true;
+      toast.error("Couldn't refresh migrations", { description: error.message });
+    } else if (!error) {
+      notifiedRef.current = false;
+    }
+  }, [error]);
+
+  const refreshNow = useCallback(() => {
+    void refresh();
+  }, [refresh]);
 
   const count = migrations.length;
 
@@ -85,6 +95,17 @@ export default function DashboardPage() {
             <SkeletonCard />
             <SkeletonCard />
           </div>
+        ) : error && count === 0 ? (
+          <EmptyState
+            icon={LeafIcon}
+            title="Couldn't load migrations"
+            description={error.message}
+            action={
+              <Button variant="outline" onClick={refreshNow}>
+                Retry
+              </Button>
+            }
+          />
         ) : count === 0 ? (
           <EmptyState
             icon={LeafIcon}
@@ -99,7 +120,7 @@ export default function DashboardPage() {
         ) : (
           <div className="grid animate-fade-in gap-5 lg:grid-cols-2">
             {migrations.map((m) => (
-              <MigrationCard key={m.id} migration={m} onAction={fetchMigrations} />
+              <MigrationCard key={m.id} migration={m} onAction={refreshNow} />
             ))}
           </div>
         )}
