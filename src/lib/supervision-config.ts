@@ -7,10 +7,17 @@ function num(key: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+// Like num() but allows zero — used for settings where 0 is a valid value (e.g. instant-retry).
+function numNonNeg(key: string, fallback: number): number {
+  const raw = getSetting(key);
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 export function getSupervisionConfig(): SupervisionConfig {
   return {
     mode: getSetting("supervisionMode") === "legacy" ? "legacy" : "supervised",
-    backoffCapSec: num("backoffCapSec", 60),
+    backoffCapSec: numNonNeg("backoffCapSec", 60),
     crashLoopMax: num("crashLoopMax", 5),
     crashLoopWindowSec: num("crashLoopWindowSec", 300),
     hungTicks: num("hungTicks", 6),

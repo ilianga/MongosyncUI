@@ -6,6 +6,11 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
+/** Hide the password in a mongodb URI for display: mongodb://user:***@host/… */
+export function maskUri(uri: string): string {
+  return uri.replace(/(mongodb(?:\+srv)?:\/\/[^:/@]+:)[^@]*(@)/i, "$1***$2");
+}
+
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const m = Math.floor(seconds / 60);

@@ -68,7 +68,7 @@ describe("db", () => {
       name: "m", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182,
     });
     insertMetric({
-      migrationId: m.id, state: "RUNNING", copyProgress: 42.5,
+      migrationId: m.id, state: "RUNNING", copyProgress: 42.5, canCommit: 1,
       estimatedCopiedBytes: 5000, estimatedTotalBytes: 10000,
       lagTimeSeconds: 3, totalEventsApplied: 1000, estimatedSecondsToCEACatchup: 12,
       indexesBuilt: 1, totalIndexesToBuild: 4, sourcePingMs: 12, destPingMs: 20,
@@ -76,6 +76,7 @@ describe("db", () => {
     const metrics = getMetrics(m.id);
     expect(metrics).toHaveLength(1);
     expect(metrics[0].copyProgress).toBe(42.5);
+    expect(metrics[0].canCommit).toBe(1);
     expect(metrics[0].indexesBuilt).toBe(1);
     deleteMigration(m.id);
     expect(getMetrics(m.id)).toHaveLength(0);

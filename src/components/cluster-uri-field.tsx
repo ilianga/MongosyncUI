@@ -19,7 +19,7 @@ export function ClusterUriField({
   register: React.ComponentProps<typeof Input>;
 }) {
   const [testing, setTesting] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [result, setResult] = useState<{ status: "ok" | "warn" | "error"; msg: string } | null>(null);
 
   useEffect(() => { setResult(null); }, [value]);
 
@@ -33,13 +33,18 @@ export function ClusterUriField({
         body: JSON.stringify({ uri: value }),
       });
       const data = await res.json();
-      setResult(
-        data.reachable
-          ? { ok: true, msg: data.version ? `Reachable — MongoDB ${data.version}` : "Reachable" }
-          : { ok: false, msg: data.error || "Unreachable" }
-      );
+      if (!data.reachable) {
+        setResult({ status: "error", msg: data.error || "Unreachable" });
+      } else if (data.warning) {
+        setResult({ status: "warn", msg: data.warning });
+      } else {
+        setResult({
+          status: "ok",
+          msg: data.version ? `Reachable — MongoDB ${data.version} (replica set)` : "Reachable",
+        });
+      }
     } catch (e) {
-      setResult({ ok: false, msg: (e as Error).message });
+      setResult({ status: "error", msg: (e as Error).message });
     } finally {
       setTesting(false);
     }
@@ -61,9 +66,14 @@ export function ClusterUriField({
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
       {result && (
-        result.ok ? (
+        result.status === "ok" ? (
           <span className="inline-flex items-center gap-1.5 text-xs text-[#00684A] dark:text-[#71F6BA]">
             <span className="h-1.5 w-1.5 rounded-full bg-[#00684A] dark:bg-[#71F6BA]" aria-hidden="true" />
+            {result.msg}
+          </span>
+        ) : result.status === "warn" ? (
+          <span className="inline-flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden="true" />
             {result.msg}
           </span>
         ) : (

@@ -42,6 +42,8 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [boot, setBoot] = useState<{ installed: boolean; path: string; tmux: boolean; platform: string } | null>(null);
+  const [cred, setCred] = useState({ currentPassword: "", username: "admin", password: "" });
+  const [savingCred, setSavingCred] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then((data) => {
@@ -78,6 +80,25 @@ export default function SettingsPage() {
     finally { setTesting(false); }
   };
 
+  const saveCredentials = async () => {
+    setSavingCred(true);
+    try {
+      const res = await fetch("/api/auth/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cred),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to update credentials");
+      toast.success("Credentials updated");
+      setCred((c) => ({ ...c, currentPassword: "", password: "" }));
+    } catch (e) {
+      toast.error("Update failed", { description: (e as Error).message });
+    } finally {
+      setSavingCred(false);
+    }
+  };
+
   const save = async () => {
     setSaving(true);
     try {
@@ -105,6 +126,37 @@ export default function SettingsPage() {
     <>
       <Topbar title="Settings" />
       <div className="max-w-2xl space-y-6 animate-fade-in pt-6">
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Security</CardTitle>
+            <CardDescription>Change the username and password used to sign in. Defaults to admin / admin.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="currentPassword">Current password</Label>
+              <Input id="currentPassword" type="password" autoComplete="current-password"
+                value={cred.currentPassword}
+                onChange={(e) => setCred((c) => ({ ...c, currentPassword: e.target.value }))} />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="newUsername">New username</Label>
+                <Input id="newUsername" autoComplete="username" value={cred.username}
+                  onChange={(e) => setCred((c) => ({ ...c, username: e.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="newPassword">New password</Label>
+                <Input id="newPassword" type="password" autoComplete="new-password" value={cred.password}
+                  onChange={(e) => setCred((c) => ({ ...c, password: e.target.value }))} />
+              </div>
+            </div>
+            <Button onClick={saveCredentials}
+              disabled={savingCred || !cred.currentPassword || !cred.username.trim() || !cred.password}>
+              {savingCred ? "Updating..." : "Update credentials"}
+            </Button>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>

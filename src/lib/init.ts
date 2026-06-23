@@ -4,6 +4,7 @@ import { reconcile } from "./supervisor";
 import { getSupervisionConfig } from "./supervision-config";
 import { hasTmux } from "./tmux";
 import { startPoller } from "./poller";
+import { seedAuth } from "./auth";
 import { execFileSync } from "node:child_process";
 
 let initialized = false;
@@ -26,6 +27,7 @@ export function initApp(): void {
   if (initialized) return;
   initialized = true;
 
+  seedAuth();
   detectBinary();
 
   if (getSupervisionConfig().mode === "supervised" && hasTmux()) {

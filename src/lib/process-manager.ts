@@ -104,6 +104,22 @@ export function killMongosync(migration: Migration): void {
   updateMigration(migration.id, { pid: null });
 }
 
+/**
+ * Best-effort reason a freshly-spawned mongosync failed to come up, read from the
+ * tail of its stdout log. mongosync prints concise causes there, e.g.
+ * "(NotAReplicaSet) node needs to be a replica set member to use read concern".
+ * Returns the last non-empty line, or null if nothing useful is available.
+ */
+export function readStartupFailure(migrationId: string): string | null {
+  try {
+    const text = fs.readFileSync(path.join(getLogDir(migrationId), "stdout.log"), "utf8");
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    return lines.length ? lines[lines.length - 1] : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function sendCommand(
   port: number,
   endpoint: string,

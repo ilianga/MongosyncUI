@@ -18,16 +18,25 @@ const RESUME_STATES = ["IDLE", "INITIALIZING"];
 // Per-migration count of consecutive unreachable /progress probes (in-memory).
 const unreachable = new Map<string, number>();
 
-export function progressToMetric(migrationId: string, resp: ProgressResponse): MetricInput {
+export function progressToMetric(
+  migrationId: string,
+  resp: ProgressResponse,
+  plannedTotalBytes?: number | null
+): MetricInput {
   const p = resp.progress;
   const copied = p?.collectionCopy?.estimatedCopiedBytes ?? 0;
-  const total = p?.collectionCopy?.estimatedTotalBytes ?? 0;
+  const mongoTotal = p?.collectionCopy?.estimatedTotalBytes ?? 0;
+  // Prefer our stable source-computed total; mongosync's estimate is unreliable early
+  // (starts low, jumps as it discovers data), which makes progress spike then drop.
+  const denom = plannedTotalBytes && plannedTotalBytes > 0 ? plannedTotalBytes : mongoTotal;
+  const copyProgress = denom > 0 ? Math.min(100, Math.max(0, (copied / denom) * 100)) : 0;
   return {
     migrationId,
     state: p?.state ?? "RUNNING",
-    copyProgress: total > 0 ? (copied / total) * 100 : 0,
+    copyProgress,
+    canCommit: p?.canCommit ? 1 : 0,
     estimatedCopiedBytes: copied,
-    estimatedTotalBytes: total,
+    estimatedTotalBytes: mongoTotal,
     lagTimeSeconds: p?.lagTimeSeconds ?? null,
     totalEventsApplied: p?.totalEventsApplied ?? 0,
     estimatedSecondsToCEACatchup: p?.estimatedSecondsToCEACatchup ?? null,
@@ -61,7 +70,7 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
     }
 
     if (liveState && liveState !== m.state) updateMigration(m.id, { state: liveState });
-    insertMetric(progressToMetric(m.id, resp));
+    insertMetric(progressToMetric(m.id, resp, m.plannedTotalBytes));
   } catch {
     if (!m.desiredRunning) return; // not supervised → nothing to rescue
     const name = sessionName(m.id);

@@ -13,6 +13,7 @@ import { LogsPanel } from "@/components/logs-panel";
 import { PreCommitDialog } from "@/components/pre-commit-dialog";
 import type { Migration, Metric } from "@/lib/types";
 import type { ProgressResponse } from "@/lib/process-manager";
+import type { IndexBuild } from "@/lib/index-builds";
 
 export default function MigrationDetailPage() {
   const params = useParams<{ id: string }>();
@@ -20,6 +21,7 @@ export default function MigrationDetailPage() {
   const [migration, setMigration] = useState<Migration | null>(null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
+  const [indexBuilds, setIndexBuilds] = useState<IndexBuild[] | null | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [commitOpen, setCommitOpen] = useState(false);
 
@@ -33,7 +35,22 @@ export default function MigrationDetailPage() {
       if (!migRes.ok) { router.push("/"); return; }
       setMigration(await migRes.json());
       setMetrics(await metRes.json());
-      setProgress(progRes.ok ? await progRes.json() : null);
+      const prog: ProgressResponse | null = progRes.ok ? await progRes.json() : null;
+      setProgress(prog);
+
+      // Only probe the destination for in-progress index builds while building is active
+      // (mongosync reports more indexes to build than completed) — avoids a mongosh spawn
+      // every tick the rest of the time.
+      const idx = prog?.progress?.indexBuilding;
+      const building = !!idx && (idx.totalIndexesToBuild ?? 0) > (idx.indexesBuilt ?? 0);
+      if (building) {
+        try {
+          const ib = await (await fetch(`/api/migrations/${params.id}/index-builds`)).json();
+          setIndexBuilds(ib.available ? (ib.builds as IndexBuild[]) : null);
+        } catch { setIndexBuilds(null); }
+      } else {
+        setIndexBuilds([]);
+      }
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
@@ -59,7 +76,14 @@ export default function MigrationDetailPage() {
           <div className="min-w-0 space-y-0.5">
             <div className="flex items-center gap-2.5">
               <h1 className="text-xl font-semibold truncate">{migration.name}</h1>
-              <StateBadge state={migration.state} />
+              {migration.stopped ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 font-mono text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" aria-hidden />
+                  Stopped
+                </span>
+              ) : (
+                <StateBadge state={migration.state} />
+              )}
               <SupervisionBadge status={migration.supervisionStatus} />
             </div>
             <p className="font-mono text-xs text-muted-foreground truncate">
@@ -73,6 +97,7 @@ export default function MigrationDetailPage() {
               migration={migration}
               onAction={fetchData}
               onConfirmCommit={() => setCommitOpen(true)}
+              canCommit={progress?.progress?.canCommit ?? undefined}
             />
           </div>
         </div>
@@ -94,7 +119,11 @@ export default function MigrationDetailPage() {
             }}>Retry</Button>
           </div>
         )}
-        <ProgressPanel data={progress} />
+        <ProgressPanel
+          data={progress}
+          plannedTotalBytes={migration.plannedTotalBytes}
+          indexBuilds={indexBuilds === undefined ? undefined : indexBuilds}
+        />
         <VerificationPanel verification={progress?.progress?.verification} />
         <MetricsCharts metrics={metrics} />
         <LogsPanel migrationId={migration.id} />

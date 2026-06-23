@@ -29,6 +29,7 @@ export function getDb(): Database.Database {
       migrationId TEXT NOT NULL REFERENCES migrations(id) ON DELETE CASCADE,
       state TEXT NOT NULL,
       copyProgress REAL NOT NULL DEFAULT 0,
+      canCommit INTEGER NOT NULL DEFAULT 0,
       estimatedCopiedBytes INTEGER NOT NULL DEFAULT 0,
       estimatedTotalBytes INTEGER NOT NULL DEFAULT 0,
       lagTimeSeconds REAL,
@@ -61,6 +62,16 @@ function migrateSchema(database: Database.Database): void {
   add("restartCount", "restartCount INTEGER NOT NULL DEFAULT 0");
   add("lastExitCode", "lastExitCode INTEGER");
   add("lastRestartAt", "lastRestartAt INTEGER");
+  add("stopped", "stopped INTEGER NOT NULL DEFAULT 0");
+  add("plannedTotalBytes", "plannedTotalBytes INTEGER");
+
+  // metrics table: additive columns added after the original schema.
+  const metricCols = new Set(
+    (database.prepare("PRAGMA table_info(metrics)").all() as { name: string }[]).map((c) => c.name)
+  );
+  if (!metricCols.has("canCommit")) {
+    database.exec("ALTER TABLE metrics ADD COLUMN canCommit INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 export function createMigration(input: CreateMigrationInput): Migration {
@@ -79,15 +90,17 @@ export function createMigration(input: CreateMigrationInput): Migration {
     restartCount: 0,
     lastExitCode: null,
     lastRestartAt: null,
+    stopped: 0,
+    plannedTotalBytes: null,
     createdAt: now,
     updatedAt: now,
   };
   getDb()
     .prepare(
       `INSERT INTO migrations (id, name, sourceUri, destUri, config, state, port, pid,
-         desiredRunning, supervisionStatus, restartCount, lastExitCode, lastRestartAt, createdAt, updatedAt)
+         desiredRunning, supervisionStatus, restartCount, lastExitCode, lastRestartAt, stopped, plannedTotalBytes, createdAt, updatedAt)
        VALUES (@id, @name, @sourceUri, @destUri, @config, @state, @port, @pid,
-         @desiredRunning, @supervisionStatus, @restartCount, @lastExitCode, @lastRestartAt, @createdAt, @updatedAt)`
+         @desiredRunning, @supervisionStatus, @restartCount, @lastExitCode, @lastRestartAt, @stopped, @plannedTotalBytes, @createdAt, @updatedAt)`
     )
     .run(migration);
   return migration;
@@ -117,14 +130,20 @@ export function deleteMigration(id: string): void {
 export function insertMetric(input: MetricInput): void {
   getDb()
     .prepare(
-      `INSERT INTO metrics (migrationId, state, copyProgress, estimatedCopiedBytes, estimatedTotalBytes,
+      `INSERT INTO metrics (migrationId, state, copyProgress, canCommit, estimatedCopiedBytes, estimatedTotalBytes,
          lagTimeSeconds, totalEventsApplied, estimatedSecondsToCEACatchup, indexesBuilt, totalIndexesToBuild,
          sourcePingMs, destPingMs, timestamp)
-       VALUES (@migrationId, @state, @copyProgress, @estimatedCopiedBytes, @estimatedTotalBytes,
+       VALUES (@migrationId, @state, @copyProgress, @canCommit, @estimatedCopiedBytes, @estimatedTotalBytes,
          @lagTimeSeconds, @totalEventsApplied, @estimatedSecondsToCEACatchup, @indexesBuilt, @totalIndexesToBuild,
          @sourcePingMs, @destPingMs, @timestamp)`
     )
     .run({ ...input, timestamp: Date.now() });
+}
+
+export function getLatestMetric(migrationId: string): Metric | undefined {
+  return getDb()
+    .prepare("SELECT * FROM metrics WHERE migrationId = ? ORDER BY timestamp DESC LIMIT 1")
+    .get(migrationId) as Metric | undefined;
 }
 
 export function getMetrics(migrationId: string, since?: number): Metric[] {

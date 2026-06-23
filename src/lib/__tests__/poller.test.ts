@@ -130,4 +130,32 @@ describe("progressToMetric", () => {
     expect(m.indexesBuilt).toBe(0);
     expect(m.sourcePingMs).toBeNull();
   });
+
+  it("records canCommit as 1/0", async () => {
+    const { progressToMetric } = await load();
+    expect(progressToMetric("mig1", sample).canCommit).toBe(1);
+    expect(
+      progressToMetric("mig1", { success: true, progress: { state: "RUNNING", canCommit: false, canWrite: false } }).canCommit
+    ).toBe(0);
+  });
+
+  it("uses the stable plannedTotalBytes denominator instead of mongosync's estimate", async () => {
+    const { progressToMetric } = await load();
+    // mongosync underestimates total at 10000 (would read 50%); planned total is the real 50000.
+    const m = progressToMetric("mig1", sample, 50000);
+    expect(m.copyProgress).toBe(10); // 5000 / 50000
+    expect(m.estimatedTotalBytes).toBe(10000); // raw mongosync value still preserved
+  });
+
+  it("clamps copyProgress to 100 when copied exceeds the planned total", async () => {
+    const { progressToMetric } = await load();
+    const m = progressToMetric("mig1", sample, 4000); // copied 5000 > planned 4000
+    expect(m.copyProgress).toBe(100);
+  });
+
+  it("falls back to mongosync's total when planned total is null or zero", async () => {
+    const { progressToMetric } = await load();
+    expect(progressToMetric("mig1", sample, null).copyProgress).toBe(50);
+    expect(progressToMetric("mig1", sample, 0).copyProgress).toBe(50);
+  });
 });

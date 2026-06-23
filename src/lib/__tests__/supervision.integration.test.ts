@@ -58,26 +58,47 @@ const FAKE_BIN = path.resolve(__dirname, "fixtures/fake-mongosync.sh");
 
 // Creates a tiny wrapper script that sets FAKE_MODE and delegates to fake-mongosync.sh.
 // This avoids relying on tmux inheriting Node.js env vars (which is not guaranteed).
+//
+// For "crash" mode we use a minimal /bin/sh script that exits 7 directly, bypassing the
+// bash→exec→bash chain used by fake-mongosync.sh.  On macOS/bash-3.2 the double-bash
+// startup occasionally stalls for >10 s inside tmux sessions due to OS process
+// scheduling, making the E2E poll window unreliable.  /bin/sh (POSIX sh / dash) starts
+// much faster and has none of the bash-3.2 pipe/exec quirks.
 function makeModeWrapper(tmpDir: string, mode: "crash" | "hang" | "normal"): string {
   const p = path.join(tmpDir, `fake-${mode}.sh`);
-  fs.writeFileSync(
-    p,
-    `#!/usr/bin/env bash\nexport FAKE_MODE=${mode}\nexec ${FAKE_BIN} "$@"\n`
-  );
+  if (mode === "crash") {
+    // Minimal POSIX sh: no bash startup overhead, exits 7 immediately.
+    fs.writeFileSync(p, "#!/bin/sh\nexit 7\n");
+  } else {
+    fs.writeFileSync(
+      p,
+      `#!/usr/bin/env bash\nexport FAKE_MODE=${mode}\nexec ${FAKE_BIN} "$@"\n`
+    );
+  }
   fs.chmodSync(p, 0o755);
   return p;
 }
 
+// Synchronous sleep using Atomics.wait (available in vitest worker threads).
+// Avoids macOS process-scheduler throttling that can occur when Node.js enters an idle
+// event-loop wait (setTimeout) — throttling can starve background tmux session processes
+// for 10+ seconds even when the bash script just needs to run "exit 7".
+function syncSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 // Wait up to `maxMs` for `predicate()` to return true, polling every `intervalMs`.
-async function pollUntil(
+// Synchronous: keeps the calling thread alive (no event-loop yielding) so the OS does
+// not downgrade the QoS of the tmux session processes we are waiting on.
+function pollUntil(
   predicate: () => boolean,
   maxMs: number,
   intervalMs = 200
-): Promise<boolean> {
+): boolean {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     if (predicate()) return true;
-    await new Promise((r) => setTimeout(r, intervalMs));
+    syncSleep(intervalMs);
   }
   return false;
 }
@@ -147,8 +168,9 @@ d("supervision E2E (real tmux)", () => {
     const sessionCreated = spawnSync("tmux", ["has-session", "-t", `msync-${m.id}`]);
     expect(sessionCreated.status).toBe(0);
 
-    // Poll: wait up to 10s for the status file to show attempt >= 2
-    // (the wrapper tries crash → backoff 0 → crash → ...).
+    // Poll: wait up to 10s for the status file to show attempt >= 2 with a recorded
+    // exit code (lastExitCode !== null confirms the crash of attempt 2 was written,
+    // avoiding a race where attempt=2 is seen before the binary has actually run).
     const statusFile = sup.statusPath(m.id);
     const reached = await pollUntil(() => {
       try {
@@ -156,7 +178,7 @@ d("supervision E2E (real tmux)", () => {
         if (!raw) return false;
         const last = raw.split("\n").pop()!;
         const parsed = JSON.parse(last);
-        return parsed.attempt >= 2;
+        return parsed.attempt >= 2 && parsed.lastExitCode !== null;
       } catch {
         return false;
       }
@@ -171,7 +193,9 @@ d("supervision E2E (real tmux)", () => {
     // finished crash_looping — either state is valid evidence of respawning.
     expect(["running", "crash_looping"]).toContain(status!.state);
     expect(status!.lastExitCode).toBe(7);
-  });
+    // Explicit timeout: the internal pollUntil budget (10s) plus tmux/shell startup
+    // exceeds vitest's 5s default, so the test must allow more wall-clock than the poll.
+  }, 20_000);
 
   it("reconcile re-adopts an existing session after a server restart (identity by name, not PID)", async () => {
     // Arrange: use a hang-mode fake binary so the session stays alive.
@@ -275,7 +299,9 @@ d("supervision E2E (real tmux)", () => {
     //    thought the session was missing and restarted it from scratch).
     const after = db2.getMigration(m.id)!;
     expect(after.supervisionStatus).toBe("running");
-  });
+    // Explicit timeout: bounded waits + many tmux spawnSync calls can approach the
+    // 5s default on a loaded machine; give headroom so this can't time out spuriously.
+  }, 15_000);
 
   // Hung-session detection is intentionally skipped here.
   //

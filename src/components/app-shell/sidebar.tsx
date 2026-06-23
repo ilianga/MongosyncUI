@@ -176,9 +176,27 @@ export function Sidebar() {
           )}
         </div>
 
-        {/* Theme toggle */}
-        <div className="flex items-center justify-center md:justify-start md:px-1">
+        {/* Theme toggle + logout */}
+        <div className="flex items-center justify-center gap-1 md:justify-start md:px-1">
           <ThemeToggle />
+          <button
+            type="button"
+            onClick={async () => {
+              await fetch("/api/auth/logout", { method: "POST" });
+              window.location.assign("/login");
+            }}
+            title="Sign out"
+            aria-label="Sign out"
+            className="flex items-center gap-2.5 rounded-md px-2 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4 shrink-0" aria-hidden>
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" x2="9" y1="12" y2="12" />
+            </svg>
+            <span className="hidden md:inline">Sign out</span>
+          </button>
         </div>
       </div>
     </aside>

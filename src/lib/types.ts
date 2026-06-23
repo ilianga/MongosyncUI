@@ -93,7 +93,37 @@ export interface Migration {
   restartCount: number;
   lastExitCode: number | null;
   lastRestartAt: number | null;
+  /** 1 when the user stopped the migration (process torn down, record kept for resume). */
+  stopped: number;
+  /**
+   * Stable total bytes to copy, computed from the source at start (sum of in-scope
+   * collection dataSize). Used as the copy-progress denominator instead of mongosync's
+   * estimatedTotalBytes, which starts low and jumps as it discovers data. Null if it
+   * couldn't be computed (then mongosync's estimate is used).
+   */
+  plannedTotalBytes: number | null;
   createdAt: number;
+  updatedAt: number;
+  /**
+   * View-only: latest polled snapshot for the dashboard card glimpse. Not DB columns —
+   * populated by GET /api/migrations from the most recent metric so the card can show
+   * progress, lag, and canCommit without each card fetching live /progress.
+   */
+  copyProgress?: number | null;
+  live?: MigrationLive | null;
+}
+
+/** Compact live snapshot attached to a Migration for the dashboard card. */
+export interface MigrationLive {
+  copyProgress: number;
+  canCommit: boolean;
+  lagTimeSeconds: number | null;
+  totalEventsApplied: number;
+  estimatedSecondsToCEACatchup: number | null;
+  estimatedCopiedBytes: number;
+  estimatedTotalBytes: number;
+  sourcePingMs: number | null;
+  destPingMs: number | null;
   updatedAt: number;
 }
 
@@ -111,6 +141,7 @@ export interface Metric {
   migrationId: string;
   state: string;
   copyProgress: number; // 0-100, derived from collectionCopy bytes
+  canCommit: number; // 0 | 1 — mongosync's canCommit at poll time (SQLite has no bool)
   estimatedCopiedBytes: number;
   estimatedTotalBytes: number;
   lagTimeSeconds: number | null;

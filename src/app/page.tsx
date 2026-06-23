@@ -76,7 +76,7 @@ export default function DashboardPage() {
             }
           />
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 animate-fade-in">
+          <div className="grid gap-5 lg:grid-cols-2 animate-fade-in">
             {migrations.map((m) => (
               <MigrationCard key={m.id} migration={m} onAction={fetchMigrations} />
             ))}

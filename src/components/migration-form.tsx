@@ -9,6 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ClusterUriField } from "./cluster-uri-field";
 import { NamespaceFilterFields } from "./namespace-filter-fields";
@@ -26,6 +29,10 @@ export function MigrationForm() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // When the destination has leftover mongosync state, we hold the submitted values
+  // and prompt the user to drop it and retry instead of failing with a raw timeout.
+  const [staleState, setStaleState] = useState<MigrationFormValues | null>(null);
+  const [dropping, setDropping] = useState(false);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const form = useForm<MigrationFormValues>({
@@ -45,22 +52,30 @@ export function MigrationForm() {
   const hasFilters =
     rowsHaveRealFilter(form.watch("includeNamespaces")) || rowsHaveRealFilter(form.watch("excludeNamespaces"));
 
+  // Returns the parsed response so callers can branch on the DEST_HAS_SYNC_STATE code.
+  const postCreate = async (values: MigrationFormValues) => {
+    const res = await fetch("/api/migrations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: values.name,
+        sourceUri: values.sourceUri,
+        destUri: values.destUri,
+        config: formValuesToConfig(values),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, code: data?.code as string | undefined, error: data?.error as string | undefined };
+  };
+
   const onSubmit = async (values: MigrationFormValues) => {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/migrations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: values.name,
-          sourceUri: values.sourceUri,
-          destUri: values.destUri,
-          config: formValuesToConfig(values),
-        }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to create migration");
-      router.push("/");
+      const r = await postCreate(values);
+      if (r.ok) { router.push("/"); return; }
+      if (r.code === "DEST_HAS_SYNC_STATE") { setStaleState(values); return; }
+      setError(r.error || "Failed to create migration");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -68,7 +83,36 @@ export function MigrationForm() {
     }
   };
 
+  // User confirmed dropping leftover sync state on the destination — drop it, then retry.
+  const confirmDropAndRetry = async () => {
+    if (!staleState) return;
+    setDropping(true);
+    setError(null);
+    try {
+      const drop = await fetch("/api/cluster-check/drop-sync-state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uri: staleState.destUri }),
+      });
+      const dropData = await drop.json().catch(() => ({}));
+      if (!drop.ok) throw new Error(dropData?.error || "Failed to drop sync state");
+
+      setSubmitting(true);
+      const r = await postCreate(staleState);
+      if (r.ok) { setStaleState(null); router.push("/"); return; }
+      setError(r.error || "Retry failed after dropping sync state");
+      setStaleState(null);
+    } catch (err) {
+      setError((err as Error).message);
+      setStaleState(null);
+    } finally {
+      setDropping(false);
+      setSubmitting(false);
+    }
+  };
+
   return (
+    <>
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
       {/* ── Connection ── */}
       <div className={sectionClass}>
@@ -197,5 +241,31 @@ export function MigrationForm() {
         </Button>
       </div>
     </form>
+
+    <Dialog open={staleState !== null} onOpenChange={(v) => { if (!v && !dropping) setStaleState(null); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Leftover sync state on destination</DialogTitle>
+          <DialogDescription>
+            The destination already has mongosync state (<code>__mdb_internal_mongosync</code>) from a
+            previous run. mongosync will try to resume that old sync instead of starting fresh, so the
+            migration never becomes ready.
+          </DialogDescription>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Drop that state database on the destination and start a fresh migration? This is mongosync&apos;s
+          own bookkeeping — it does not delete your data.
+        </p>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setStaleState(null)} disabled={dropping}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={confirmDropAndRetry} disabled={dropping}>
+            {dropping ? "Dropping..." : "Drop & retry"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -7,6 +7,10 @@ const execFileAsync = promisify(execFile);
 export interface ClusterCheck {
   reachable: boolean;
   version?: string;
+  /** True if the node is a replica set member. mongosync requires this on both ends. */
+  isReplicaSet?: boolean;
+  /** Non-fatal advisory surfaced to the user (e.g. standalone node). */
+  warning?: string;
   error?: string;
 }
 
@@ -38,6 +42,44 @@ function tcpProbe(host: string, port: number, timeoutMs = 4000): Promise<boolean
   });
 }
 
+/** Database mongosync uses on the destination to persist resumable sync state. */
+export const MONGOSYNC_STATE_DB = "__mdb_internal_mongosync";
+
+/**
+ * True if the destination already holds mongosync sync state from a previous run.
+ * On startup mongosync auto-resumes that state instead of reaching IDLE, which makes
+ * a fresh "start" hang. Detecting it lets the UI offer to drop it. Throws if mongosh
+ * is unavailable or the cluster cannot be queried, so callers can fall back.
+ */
+export async function hasSyncState(uri: string): Promise<boolean> {
+  const { stdout } = await execFileAsync(
+    "mongosh",
+    [
+      uri,
+      "--quiet",
+      "--eval",
+      `JSON.stringify({ has: db.getMongo().getDBNames().includes(${JSON.stringify(MONGOSYNC_STATE_DB)}) })`,
+    ],
+    { timeout: 8000 }
+  );
+  const parsed = JSON.parse(stdout.trim()) as { has: boolean };
+  return parsed.has === true;
+}
+
+/** Drop mongosync's resumable-state database on the destination so the next run starts fresh. */
+export async function dropSyncState(uri: string): Promise<void> {
+  await execFileAsync(
+    "mongosh",
+    [
+      uri,
+      "--quiet",
+      "--eval",
+      `db.getSiblingDB(${JSON.stringify(MONGOSYNC_STATE_DB)}).dropDatabase()`,
+    ],
+    { timeout: 8000 }
+  );
+}
+
 export async function checkCluster(uri: string): Promise<ClusterCheck> {
   let hosts: string[];
   try {
@@ -49,14 +91,24 @@ export async function checkCluster(uri: string): Promise<ClusterCheck> {
   const reachable = await tcpProbe(host, Number(portStr));
   if (!reachable) return { reachable: false, error: `Cannot reach ${hosts[0]}` };
 
-  // Best-effort version read via mongosh if present; failure is non-fatal.
+  // Best-effort probe via mongosh if present; failure is non-fatal. We read both
+  // the version and replica-set membership in one shot. mongosync requires BOTH
+  // source and destination to be replica sets (it reads the oplog / uses read
+  // concern), so a standalone node fails fatally at init with NotAReplicaSet —
+  // catch it here with a clear warning instead of a cryptic crash on start.
   try {
     const { stdout } = await execFileAsync(
       "mongosh",
-      [uri, "--quiet", "--eval", "db.version()"],
+      [uri, "--quiet", "--eval", "JSON.stringify({ v: db.version(), rs: !!db.hello().setName })"],
       { timeout: 8000 }
     );
-    return { reachable: true, version: stdout.trim() };
+    const parsed = JSON.parse(stdout.trim()) as { v: string; rs: boolean };
+    const result: ClusterCheck = { reachable: true, version: parsed.v, isReplicaSet: parsed.rs };
+    if (!parsed.rs) {
+      result.warning =
+        "Node is a standalone, not a replica set. mongosync requires a replica set on both source and destination. Restart mongod with --replSet and run rs.initiate().";
+    }
+    return result;
   } catch {
     return { reachable: true };
   }

@@ -170,13 +170,39 @@ Response fields (under `progress`):
 | `estimatedOplogTimeRemaining` | string | Est. oplog window left (e.g. "12 hours"). |
 | `collectionCopy.estimatedCopiedBytes` | int | Bytes copied by this instance. |
 | `collectionCopy.estimatedTotalBytes` | int | Est. total bytes to copy. |
-| `indexBuilding.indexesBuilt` / `.totalIndexesToBuild` | int | Index build counts. |
+| `indexBuilding.indexesBuilt` / `.totalIndexesToBuild` | int | Index build counts. **`indexesBuilt` counts only COMPLETED builds**, so it stays at 0 for the whole (often long) build phase and is not a live-progress signal. |
 | `indexBuilding.collectionsFinished` / `.collectionsTotal` | int | Collections with index builds done. |
 | `directionMapping.Source` / `.Destination` | string | `name: host:port` for each side (note capitalized keys; updates after reverse). |
 | `source.pingLatencyMs` / `destination.pingLatencyMs` | int | Ping latency (refreshed ~30s). |
 | `mongosyncID` / `coordinatorID` | string | Instance / coordinator identifiers. |
 | `warnings` | string[] | Warnings detected by mongosync. |
 | `verification.source` / `.destination` | document | Per-cluster verifier: `phase`, `estimatedDocumentCount`, `hashedDocumentCount`, `scannedCollectionCount`, `totalCollectionCount`, `lagTimeSeconds`. |
+
+#### Live index-build progress (not from mongosync)
+
+mongosync does **not** advertise *in-progress* index builds — `indexBuilding.indexesBuilt`
+only increments when a build finishes, so `/progress` shows `0 of N` for the entire build
+phase even while indexes are actively building. To show real progress the UI reads the
+**destination** directly via `$currentOp` (`src/lib/index-builds.ts` → per-namespace
+`{ns, done, total, pct}` from the collection-scan phase).
+
+This requires the connecting **destination** user to hold the `inprog` privilege, granted
+by the **`clusterMonitor`** role (and by `root`/`atlasAdmin`). `clusterMonitor` is already
+in mongosync's recommended destination role set, so a correctly-permissioned sync user gets
+this for free; if it's missing, the Index Building panel shows a hint to add the role.
+
+### Required user permissions (self-managed)
+
+mongosync needs an **authenticated** user with cluster-level privileges; it cannot run
+against an auth-disabled cluster (its preflight reads the connected user's privilege list,
+which is empty without auth). Recommended built-in roles:
+
+- **Source:** `backup`, `clusterManager`, `clusterMonitor`, `readWriteAnyDatabase`, `restore`
+- **Destination:** `clusterManager`, `clusterMonitor`, `readWriteAnyDatabase`, `restore`
+  (add `backup` + `dbAdminAnyDatabase` for reverse sync)
+
+`clusterMonitor` is what also enables the live index-build read above. `root` is a superset
+and fine for local testing.
 
 ### mongosync process options (CLI flags → generated `--config` YAML)
 

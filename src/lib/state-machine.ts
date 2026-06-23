@@ -1,17 +1,20 @@
 import type { MongosyncState } from "./types";
 
-export type ActionKind = "start" | "pause" | "resume" | "commit" | "reverse" | "delete";
+export type ActionKind = "start" | "pause" | "resume" | "commit" | "reverse" | "stop" | "restart" | "delete";
 
 const ACTIONS: Record<MongosyncState, ActionKind[]> = {
   IDLE: ["start", "delete"],
-  RUNNING: ["pause", "commit", "delete"],
-  PAUSED: ["resume", "delete"],
+  RUNNING: ["pause", "commit", "stop", "delete"],
+  PAUSED: ["resume", "stop", "delete"],
   COMMITTING: ["delete"],
   COMMITTED: ["reverse", "delete"],
   REVERSING: ["delete"],
 };
 
-export function availableActions(state: MongosyncState): ActionKind[] {
+// `stopped` migrations have no live process; the only moves are resume (restart) or delete,
+// regardless of the last mongosync state we recorded.
+export function availableActions(state: MongosyncState, stopped = false): ActionKind[] {
+  if (stopped) return ["restart", "delete"];
   return ACTIONS[state] ?? ["delete"];
 }
 
