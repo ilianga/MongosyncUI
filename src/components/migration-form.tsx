@@ -2,7 +2,8 @@
 
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { migrationFormSchema, formValuesToConfig, type MigrationFormValues } from "@/lib/schemas";
+import { migrationFormSchema, formValuesToConfig, connToConfig, type MigrationFormValues } from "@/lib/schemas";
+import { buildConnectionString } from "@/lib/connection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,11 +14,20 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ClusterUriField } from "./cluster-uri-field";
+import { ConnectionBuilder } from "./connection-builder";
 import { NamespaceFilterFields } from "./namespace-filter-fields";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { nanoid } from "nanoid";
 import { cn } from "@/lib/utils";
+
+const emptyConn = {
+  raw: "", scheme: "mongodb" as const, hosts: "", authMethod: "none" as const,
+  username: "", password: "", authSource: "", authMechanism: "DEFAULT" as const,
+  serviceName: "", awsSessionToken: "",
+  tlsEnabled: false, tlsCaFile: "", tlsCertKeyFile: "", tlsCertKeyPassword: "",
+  tlsAllowInvalidCertificates: false, tlsAllowInvalidHostnames: false,
+};
 
 const sectionClass = "rounded-lg border border-border bg-card p-5 space-y-4";
 const sectionHeaderClass = "text-sm font-semibold text-foreground";
@@ -33,12 +43,15 @@ export function MigrationForm() {
   // and prompt the user to drop it and retry instead of failing with a raw timeout.
   const [staleState, setStaleState] = useState<MigrationFormValues | null>(null);
   const [dropping, setDropping] = useState(false);
+  // Single cert-staging token shared by both clusters' uploads, submitted on create so the
+  // server moves staged PEMs into the migration's permanent cert dir.
+  const tokenRef = useRef(nanoid());
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const form = useForm<MigrationFormValues>({
     resolver: zodResolver(migrationFormSchema) as any,
     defaultValues: {
-      name: "", sourceUri: "", destUri: "",
+      name: "", source: { ...emptyConn }, dest: { ...emptyConn },
       reversible: false, buildIndexes: "afterDataCopy", detectRandomId: true,
       preExistingDestinationData: false, verificationEnabled: true,
       loadLevel: 3, verbosity: "INFO",
@@ -59,8 +72,9 @@ export function MigrationForm() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: values.name,
-        sourceUri: values.sourceUri,
-        destUri: values.destUri,
+        sourceConn: connToConfig(values.source),
+        destConn: connToConfig(values.dest),
+        token: tokenRef.current,
         config: formValuesToConfig(values),
       }),
     });
@@ -92,7 +106,7 @@ export function MigrationForm() {
       const drop = await fetch("/api/cluster-check/drop-sync-state", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri: staleState.destUri }),
+        body: JSON.stringify({ uri: buildConnectionString(connToConfig(staleState.dest)) }),
       });
       const dropData = await drop.json().catch(() => ({}));
       if (!drop.ok) throw new Error(dropData?.error || "Failed to drop sync state");
@@ -127,14 +141,8 @@ export function MigrationForm() {
           )}
         </div>
 
-        <ClusterUriField
-          id="sourceUri" label="Source Cluster URI" value={form.watch("sourceUri")}
-          error={form.formState.errors.sourceUri?.message} register={form.register("sourceUri")}
-        />
-        <ClusterUriField
-          id="destUri" label="Destination Cluster URI" value={form.watch("destUri")}
-          error={form.formState.errors.destUri?.message} register={form.register("destUri")}
-        />
+        <ConnectionBuilder side="source" label="Source Cluster" form={form} token={tokenRef.current} />
+        <ConnectionBuilder side="dest" label="Destination Cluster" form={form} token={tokenRef.current} />
       </div>
 
       {/* ── Sync Options ── */}

@@ -79,11 +79,19 @@ export interface StartConfig {
   enableCappedCollectionHandling?: boolean;
 }
 
+// Structured connection config, persisted as JSON in Migration.sourceConn/destConn.
+// Defined in lib/connection.ts; re-exported here so types.ts stays the single import point.
+export type { ConnectionConfig } from "./connection";
+
 export interface Migration {
   id: string;
   name: string;
   sourceUri: string;
   destUri: string;
+  /** JSON of the structured ConnectionConfig used to build sourceUri (display/edit). Null for legacy rows. */
+  sourceConn?: string | null;
+  /** JSON of the structured ConnectionConfig used to build destUri (display/edit). Null for legacy rows. */
+  destConn?: string | null;
   config: string; // JSON of StartConfig
   state: MongosyncState;
   port: number;
@@ -135,6 +143,9 @@ export interface CreateMigrationInput {
   name: string;
   sourceUri: string;
   destUri: string;
+  /** JSON of the structured ConnectionConfig per side (optional; null for legacy string creates). */
+  sourceConn?: string | null;
+  destConn?: string | null;
   config: StartConfig;
   port: number;
 }
