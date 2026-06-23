@@ -44,4 +44,16 @@ describe("getIndexBuilds", () => {
     const { getIndexBuilds } = await load();
     expect(await getIndexBuilds("mongodb://u:p@h/admin")).toBeNull();
   });
+
+  it("returns null when mongosh is missing (ENOENT)", async () => {
+    mockMongosh({ error: Object.assign(new Error("spawn mongosh ENOENT"), { code: "ENOENT" }) });
+    const { getIndexBuilds } = await load();
+    expect(await getIndexBuilds("mongodb://u:p@h/admin")).toBeNull();
+  });
+
+  it("returns null on non-JSON output", async () => {
+    mockMongosh({ stdout: "not json at all" });
+    const { getIndexBuilds } = await load();
+    expect(await getIndexBuilds("mongodb://u:p@h/admin")).toBeNull();
+  });
 });

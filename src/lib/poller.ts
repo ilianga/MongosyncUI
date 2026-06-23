@@ -95,20 +95,40 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
 }
 
 export async function pollOnce(): Promise<void> {
-  // Drive desired-vs-actual first so crashed/missing sessions are rebuilt before probing.
-  reconcile();
-  const cfg = getSupervisionConfig();
-  for (const m of getAllMigrations()) {
-    if (!m.desiredRunning && !ACTIVE_STATES.includes(m.state)) continue;
+  // This runs on a setInterval; a throw here would be an unhandled rejection that kills
+  // future ticks. Every step is therefore guarded so one bad migration (or a transient
+  // DB/reconcile error) can never take down the whole health monitor.
+  try {
+    // Drive desired-vs-actual first so crashed/missing sessions are rebuilt before probing.
+    reconcile();
+  } catch {
+    /* reconcile is best-effort; next tick retries */
+  }
 
-    // Legacy / unsupervised migration: if the PID we stored is no longer alive, clear it
-    // and skip probing — there is no process to query and no supervisor to restart it.
-    if (!m.desiredRunning && m.pid !== null && m.pid !== undefined && !isProcessAlive(m.pid)) {
-      updateMigration(m.id, { pid: null });
-      continue;
+  let cfg;
+  let migrations;
+  try {
+    cfg = getSupervisionConfig();
+    migrations = getAllMigrations();
+  } catch {
+    return; // DB unavailable this tick — bail; next tick retries.
+  }
+
+  for (const m of migrations) {
+    try {
+      if (!m.desiredRunning && !ACTIVE_STATES.includes(m.state)) continue;
+
+      // Legacy / unsupervised migration: if the PID we stored is no longer alive, clear it
+      // and skip probing — there is no process to query and no supervisor to restart it.
+      if (!m.desiredRunning && m.pid !== null && m.pid !== undefined && !isProcessAlive(m.pid)) {
+        updateMigration(m.id, { pid: null });
+        continue;
+      }
+
+      await probe(m, cfg.hungTicks);
+    } catch {
+      // Per-migration isolation: a failure probing one migration must not abort the loop.
     }
-
-    await probe(m, cfg.hungTicks);
   }
 }
 
