@@ -1,11 +1,8 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import net from "node:net";
 import { buildConnectionString, type ConnectionConfig } from "./connection";
 import { parseMongoUri, MONGOSYNC_STATE_DB } from "./cluster-check";
 import type { StartConfig } from "./types";
-
-const execFileAsync = promisify(execFile);
+import { runMongoshEval } from "./mongosh";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types (kept local per file-ownership rules)
@@ -211,15 +208,13 @@ async function gatherFacts(uri: string): Promise<ClusterFacts> {
   if (!reachable) return { reachable: false, error: "TCP connection refused or timed out" };
 
   try {
-    const { stdout } = await execFileAsync(
-      "mongosh",
-      [uri, "--quiet", "--eval", FACTS_EVAL],
-      { timeout: 12000 }
-    );
-    const parsed = JSON.parse(stdout.trim()) as Omit<ClusterFacts, "reachable">;
+    const stdout = await runMongoshEval(uri, FACTS_EVAL, { timeoutMs: 12000 });
+    const parsed = JSON.parse(stdout) as Omit<ClusterFacts, "reachable">;
     return { reachable: true, ...parsed };
   } catch (e) {
-    // mongosh present but the eval failed — most commonly an auth failure.
+    // mongosh present but the eval failed — most commonly an auth failure. (A missing
+    // mongosh binary surfaces here too, via MongoshNotFoundError's message.) The original
+    // error text is preserved in the normalised message so looksLikeAuthError still matches.
     const msg = (e as Error).message || String(e);
     return { reachable: true, authenticated: false, error: msg };
   }

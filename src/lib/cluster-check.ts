@@ -1,8 +1,5 @@
 import net from "node:net";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { runMongoshEval, runMongoshJson } from "./mongosh";
 
 export interface ClusterCheck {
   reachable: boolean;
@@ -52,31 +49,20 @@ export const MONGOSYNC_STATE_DB = "__mdb_internal_mongosync";
  * is unavailable or the cluster cannot be queried, so callers can fall back.
  */
 export async function hasSyncState(uri: string): Promise<boolean> {
-  const { stdout } = await execFileAsync(
-    "mongosh",
-    [
-      uri,
-      "--quiet",
-      "--eval",
-      `JSON.stringify({ has: db.getMongo().getDBNames().includes(${JSON.stringify(MONGOSYNC_STATE_DB)}) })`,
-    ],
-    { timeout: 8000 }
+  const parsed = await runMongoshJson<{ has: boolean }>(
+    uri,
+    `JSON.stringify({ has: db.getMongo().getDBNames().includes(${JSON.stringify(MONGOSYNC_STATE_DB)}) })`,
+    { timeoutMs: 8000 }
   );
-  const parsed = JSON.parse(stdout.trim()) as { has: boolean };
   return parsed.has === true;
 }
 
 /** Drop mongosync's resumable-state database on the destination so the next run starts fresh. */
 export async function dropSyncState(uri: string): Promise<void> {
-  await execFileAsync(
-    "mongosh",
-    [
-      uri,
-      "--quiet",
-      "--eval",
-      `db.getSiblingDB(${JSON.stringify(MONGOSYNC_STATE_DB)}).dropDatabase()`,
-    ],
-    { timeout: 8000 }
+  await runMongoshEval(
+    uri,
+    `db.getSiblingDB(${JSON.stringify(MONGOSYNC_STATE_DB)}).dropDatabase()`,
+    { timeoutMs: 8000 }
   );
 }
 
@@ -97,12 +83,11 @@ export async function checkCluster(uri: string): Promise<ClusterCheck> {
   // concern), so a standalone node fails fatally at init with NotAReplicaSet —
   // catch it here with a clear warning instead of a cryptic crash on start.
   try {
-    const { stdout } = await execFileAsync(
-      "mongosh",
-      [uri, "--quiet", "--eval", "JSON.stringify({ v: db.version(), rs: !!db.hello().setName })"],
-      { timeout: 8000 }
+    const parsed = await runMongoshJson<{ v: string; rs: boolean }>(
+      uri,
+      "JSON.stringify({ v: db.version(), rs: !!db.hello().setName })",
+      { timeoutMs: 8000 }
     );
-    const parsed = JSON.parse(stdout.trim()) as { v: string; rs: boolean };
     const result: ClusterCheck = { reachable: true, version: parsed.v, isReplicaSet: parsed.rs };
     if (!parsed.rs) {
       result.warning =

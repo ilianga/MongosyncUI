@@ -23,6 +23,38 @@ async function loadDb() {
 }
 
 describe("db", () => {
+  it("sets WAL journal mode and a busy_timeout so a momentarily-locked DB retries", async () => {
+    const { getDb } = await loadDb();
+    const journal = (getDb().pragma("journal_mode", { simple: true }) as string).toLowerCase();
+    expect(journal).toBe("wal");
+    const busy = getDb().pragma("busy_timeout", { simple: true }) as number;
+    expect(busy).toBe(5000);
+  });
+
+  it("concurrent writers do not throw SQLITE_BUSY (busy_timeout makes them wait)", async () => {
+    // Two connections to the same file writing concurrently must not raise SQLITE_BUSY;
+    // busy_timeout serialises them transparently. Round-trips through the cached getDb()
+    // plus a second raw connection to the same path.
+    const { getDb, setSetting, getSetting } = await loadDb();
+    const Database = (await import("better-sqlite3")).default;
+    const path = (await import("path")).default;
+    const dbPath = path.join(testDir, "data.db");
+    const other = new Database(dbPath);
+    other.pragma("busy_timeout = 5000");
+    try {
+      expect(() => {
+        for (let i = 0; i < 25; i++) {
+          setSetting("k", String(i));
+          other.prepare("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run("o", String(i));
+        }
+      }).not.toThrow();
+      expect(getSetting("k")).toBe("24");
+      void getDb();
+    } finally {
+      other.close();
+    }
+  });
+
   it("creates tables on first access", async () => {
     const { getDb } = await loadDb();
     const names = (getDb()

@@ -15,10 +15,36 @@ let db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (db) return db;
-  db = new Database(path.join(getDataDir(), "data.db"));
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.exec(`
+  let database: Database.Database;
+  try {
+    database = new Database(path.join(getDataDir(), "data.db"));
+    // WAL keeps reads (the poller) non-blocking against writes; busy_timeout makes a
+    // momentarily-locked DB retry for up to 5s instead of throwing SQLITE_BUSY — the
+    // poller and API routes can hit the same file concurrently.
+    database.pragma("journal_mode = WAL");
+    database.pragma("busy_timeout = 5000");
+    database.pragma("foreign_keys = ON");
+  } catch (e) {
+    throw new Error(
+      `Failed to open the MongosyncUI database at ${path.join(getDataDir(), "data.db")}: ${
+        (e as Error).message
+      }`
+    );
+  }
+  try {
+    initSchema(database);
+  } catch (e) {
+    // Don't cache a half-initialised connection — close it and surface a clear error so
+    // a later getDb() can retry rather than returning a connection with no schema.
+    try { database.close(); } catch { /* best effort */ }
+    throw new Error(`Failed to initialise the MongosyncUI database schema: ${(e as Error).message}`);
+  }
+  db = database;
+  return db;
+}
+
+function initSchema(database: Database.Database): void {
+  database.exec(`
     CREATE TABLE IF NOT EXISTS migrations (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -62,8 +88,7 @@ export function getDb(): Database.Database {
       updatedAt INTEGER NOT NULL
     );
   `);
-  migrateSchema(db);
-  return db;
+  migrateSchema(database);
 }
 
 // Additive, idempotent column migrations. CREATE TABLE IF NOT EXISTS never alters an

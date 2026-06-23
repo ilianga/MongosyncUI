@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { runMongoshJson } from "./mongosh";
 
 export interface IndexBuild {
   ns: string;
@@ -42,8 +39,11 @@ print(JSON.stringify({ builds: builds }));
  */
 export async function getIndexBuilds(uri: string): Promise<IndexBuild[] | null> {
   try {
-    const { stdout } = await execFileAsync("mongosh", [uri, "--quiet", "--eval", SCRIPT], { timeout: 8000 });
-    const parsed = JSON.parse(stdout.trim()) as { builds: { ns: string; done: number; total: number }[] };
+    const parsed = await runMongoshJson<{ builds: { ns: string; done: number; total: number }[] }>(
+      uri,
+      SCRIPT,
+      { timeoutMs: 8000 }
+    );
     return parsed.builds.map((b) => ({
       ns: b.ns,
       done: b.done,

@@ -80,3 +80,21 @@ describe("dropSyncState", () => {
     expect(evalArg).toContain(MONGOSYNC_STATE_DB);
   });
 });
+
+describe("hasSyncState error paths", () => {
+  it("surfaces a clear error when mongosh is missing (ENOENT)", async () => {
+    execFileImpl.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null) => void) => {
+        cb(Object.assign(new Error("spawn mongosh ENOENT"), { code: "ENOENT" }));
+      }
+    );
+    const { hasSyncState } = await load();
+    await expect(hasSyncState("mongodb://h/admin")).rejects.toThrow(/not installed|not on PATH/);
+  });
+
+  it("throws on non-JSON output so callers can fall back", async () => {
+    mockMongosh({ stdout: "garbage not json" });
+    const { hasSyncState } = await load();
+    await expect(hasSyncState("mongodb://h/admin")).rejects.toThrow(/non-JSON/);
+  });
+});

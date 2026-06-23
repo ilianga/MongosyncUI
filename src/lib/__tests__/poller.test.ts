@@ -45,6 +45,25 @@ describe("pollOnce health monitoring", () => {
     expect(supervisor.reconcile).toHaveBeenCalled();
   });
 
+  it("never throws when reconcile fails — probing still proceeds", async () => {
+    await withRunningMigration();
+    supervisor.reconcile.mockImplementation(() => { throw new Error("tmux blew up"); });
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "RUNNING", canCommit: false, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await expect(pollOnce()).resolves.toBeUndefined();
+    // reconcile threw but probing continued.
+    expect(pm.fetchProgress).toHaveBeenCalled();
+  });
+
+  it("isolates a per-migration failure — one bad probe does not abort the tick", async () => {
+    await withRunningMigration();
+    // getProcessStats throwing inside probe() must be swallowed, not propagate out of pollOnce.
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "RUNNING", canCommit: false, canWrite: false } });
+    resourceStats.getProcessStats.mockRejectedValue(new Error("ps exploded"));
+    const { pollOnce } = await import("@/lib/poller");
+    await expect(pollOnce()).resolves.toBeUndefined();
+  });
+
   it("restarts a hung migration after hungTicks unreachable probes", async () => {
     const { id } = await withRunningMigration();
     pm.fetchProgress.mockRejectedValue(new Error("ECONNREFUSED"));

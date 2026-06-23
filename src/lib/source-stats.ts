@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { StartConfig } from "./types";
-
-const execFileAsync = promisify(execFile);
+import { runMongoshJson } from "./mongosh";
 
 // mongosync's reported `estimatedTotalBytes` is discovered in stages and starts far too
 // low, so copy progress (copied/total) can spike toward 100% and then collapse when the
@@ -59,8 +56,7 @@ export async function computeSourceTotalBytes(uri: string, cfg: StartConfig): Pr
   });
   const script = `var filter = ${filter};\n${TOTAL_SCRIPT}`;
   try {
-    const { stdout } = await execFileAsync("mongosh", [uri, "--quiet", "--eval", script], { timeout: 20000 });
-    const parsed = JSON.parse(stdout.trim()) as { total: number };
+    const parsed = await runMongoshJson<{ total: number }>(uri, script, { timeoutMs: 20000 });
     return Number.isFinite(parsed.total) && parsed.total > 0 ? parsed.total : null;
   } catch {
     return null;

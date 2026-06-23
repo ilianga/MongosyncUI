@@ -65,18 +65,64 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Validate the configured mongosync binary before attempting to launch it, so a
+ * misconfigured path produces a clear, actionable error at the call site instead of a
+ * silent async spawn failure (detached spawns surface ENOENT on a later 'error' event,
+ * never synchronously). Only an absolute/relative path can be stat-checked; the bare
+ * "mongosync" (PATH lookup) is accepted and validated by the spawn itself.
+ */
+export function assertMongosyncRunnable(): void {
+  const bin = resolveMongosyncBin();
+  // Bare command name → resolved via PATH at spawn time; nothing to stat here.
+  if (!bin.includes("/")) return;
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(bin);
+  } catch {
+    throw new Error(
+      `mongosync binary not found at "${bin}". Set the correct path in Settings, or leave it blank to use mongosync on PATH.`
+    );
+  }
+  if (stat.isDirectory()) {
+    throw new Error(`mongosync path "${bin}" is a directory, not the executable.`);
+  }
+  try {
+    fs.accessSync(bin, fs.constants.X_OK);
+  } catch {
+    throw new Error(`mongosync binary at "${bin}" is not executable (chmod +x it, or fix the path).`);
+  }
+}
+
 function legacySpawn(migration: Migration): number {
-  const configPath = generateConfig(migration);
+  assertMongosyncRunnable();
+  let configPath: string;
+  try {
+    configPath = generateConfig(migration);
+  } catch (e) {
+    throw new Error(`Failed to write mongosync config for migration ${migration.id}: ${(e as Error).message}`);
+  }
   const logDir = getLogDir(migration.id);
-  const outFd = fs.openSync(path.join(logDir, "stdout.log"), "a");
-  const errFd = fs.openSync(path.join(logDir, "stderr.log"), "a");
-  const child = spawn(getMongosyncPath(), ["--config", configPath], {
-    detached: true,
-    stdio: ["ignore", outFd, errFd],
-  });
-  // Close parent's copies of the FDs — child already inherited them.
-  fs.closeSync(outFd);
-  fs.closeSync(errFd);
+  let outFd: number;
+  let errFd: number;
+  try {
+    outFd = fs.openSync(path.join(logDir, "stdout.log"), "a");
+    errFd = fs.openSync(path.join(logDir, "stderr.log"), "a");
+  } catch (e) {
+    throw new Error(`Failed to open mongosync log files in ${logDir}: ${(e as Error).message}`);
+  }
+  let child;
+  try {
+    child = spawn(getMongosyncPath(), ["--config", configPath], {
+      detached: true,
+      stdio: ["ignore", outFd, errFd],
+    });
+  } finally {
+    // Close parent's copies of the FDs — child already inherited them. Always run,
+    // even if spawn throws, so we don't leak descriptors.
+    try { fs.closeSync(outFd); } catch { /* already closed */ }
+    try { fs.closeSync(errFd); } catch { /* already closed */ }
+  }
   if (!child.pid) throw new Error("Failed to spawn mongosync (binary not found or not executable?)");
   child.unref();
   updateMigration(migration.id, { pid: child.pid, supervisionStatus: "unsupervised" });
@@ -86,6 +132,9 @@ function legacySpawn(migration: Migration): number {
 export function spawnMongosync(migration: Migration): number {
   const supervised = getSupervisionConfig().mode === "supervised" && hasTmux();
   if (supervised) {
+    // Validate up front so a bad binary path surfaces clearly here rather than as a
+    // crash-looping tmux session the user has to dig logs to diagnose.
+    assertMongosyncRunnable();
     superviseStart(migration);
     return 0; // pid is informational only under supervision; identity is the session name
   }
