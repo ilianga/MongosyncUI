@@ -52,8 +52,8 @@ export function MigrationForm() {
     resolver: zodResolver(migrationFormSchema) as any,
     defaultValues: {
       name: "", source: { ...emptyConn }, dest: { ...emptyConn },
-      reversible: false, buildIndexes: "afterDataCopy", detectRandomId: true,
-      preExistingDestinationData: false, verificationEnabled: true,
+      reversible: false, buildIndexes: "beforeDataCopy", detectRandomId: true,
+      preExistingDestinationData: false, verificationEnabled: false,
       loadLevel: 3, verbosity: "INFO",
       includeNamespaces: [], excludeNamespaces: [], shardingEntries: [],
     },
@@ -184,11 +184,7 @@ export function MigrationForm() {
             <option value="never">never</option>
           </select>
         </div>
-        <div className="flex items-center justify-between">
-          <Label htmlFor="verification">Enable Embedded Verification</Label>
-          <Switch id="verification" checked={form.watch("verificationEnabled")}
-            onCheckedChange={(v) => form.setValue("verificationEnabled", v)} />
-        </div>
+        {/* Embedded verification is intentionally hidden and off by default. */}
       </div>
 
       {/* ── Namespace Filtering ── */}

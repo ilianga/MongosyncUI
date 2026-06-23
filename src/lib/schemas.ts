@@ -151,10 +151,10 @@ export const migrationFormSchema = z.object({
   reversible: z.boolean().default(false),
   buildIndexes: z
     .enum(["afterDataCopy", "beforeDataCopy", "excludeHashed", "excludeHashedAfterCopy", "never"])
-    .default("afterDataCopy"),
+    .default("beforeDataCopy"),
   detectRandomId: z.boolean().default(true),
   preExistingDestinationData: z.boolean().default(false),
-  verificationEnabled: z.boolean().default(true),
+  verificationEnabled: z.boolean().default(false),
   loadLevel: z.number().min(1).max(4).default(3),
   verbosity: z.enum(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "PANIC"]).default("INFO"),
   includeNamespaces: z.array(namespaceRowSchema).default([]),
