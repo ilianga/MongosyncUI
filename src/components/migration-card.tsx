@@ -7,9 +7,21 @@ import { ActionButtons } from "./action-buttons";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatDuration, maskUri } from "@/lib/format";
 import type { Migration } from "@/lib/types";
+import type { ProgressGlimpse } from "@/lib/progress";
 import Link from "next/link";
 
 const ACTIVE_STATES = new Set(["RUNNING", "COMMITTING", "REVERSING"]);
+
+// Build the compact one-line phase summary, e.g. "Copying · 44% · ~12m left".
+function phaseLine(p: ProgressGlimpse): string {
+  const parts: string[] = [p.phaseLabel];
+  if (p.phaseProgressPct != null && (p.phase === "copy" || p.phase === "index")) {
+    parts.push(`${Math.round(p.phaseProgressPct)}%`);
+  }
+  if (p.phase === "cea" && p.detail) parts.push(p.detail); // "lag 8s"
+  if (p.etaSec != null) parts.push(`~${formatDuration(p.etaSec)} left`);
+  return parts.join(" · ");
+}
 
 // One compact labelled metric in the card's glimpse grid.
 function Cell({ label, value, tone }: { label: string; value: React.ReactNode; tone?: "ok" | "warn" }) {
@@ -39,6 +51,7 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
   const showDeterminate = isActive && pct !== null && pct > 0;
   const lag = live?.lagTimeSeconds ?? null;
   const canCommit = live?.canCommit ?? false;
+  const progress = migration.progress ?? null;
 
   return (
     <Card className="group gap-0 p-5 transition-all hover:ring-primary/40 hover:shadow-sm">
@@ -91,6 +104,17 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
           </p>
         )}
       </div>
+
+      {/* Phase glimpse line — where the migration is + ETA for the current phase. */}
+      {!isStopped && progress && progress.phase !== "idle" && (
+        <p className="mt-2 font-mono text-xs text-muted-foreground">
+          {progress.phase === "ready" ? (
+            <span className="text-[#00684A] dark:text-[#71F6BA]">Ready to commit</span>
+          ) : (
+            phaseLine(progress)
+          )}
+        </p>
+      )}
 
       {/* Glimpse grid — only when we have a live snapshot */}
       {live && !isStopped && (

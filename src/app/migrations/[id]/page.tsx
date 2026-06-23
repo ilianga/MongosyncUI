@@ -8,6 +8,7 @@ import { SupervisionBadge } from "@/components/supervision-badge";
 import { ActionButtons } from "@/components/action-buttons";
 import { Button } from "@/components/ui/button";
 import { ProgressPanel } from "@/components/progress-panel";
+import { MigrationProgress } from "@/components/migration-progress";
 import { VerificationPanel } from "@/components/verification-panel";
 import { MetricsCharts } from "@/components/metrics-charts";
 import { LogsPanel } from "@/components/logs-panel";
@@ -175,6 +176,11 @@ export default function MigrationDetailPage() {
             }}>Retry</Button>
           </div>
         )}
+        <MigrationProgress
+          metrics={metrics}
+          state={migration.state}
+          plannedTotalBytes={migration.plannedTotalBytes}
+        />
         <ResourceStatsRow metric={metrics.length ? metrics[metrics.length - 1] : undefined} />
         <ProgressPanel
           data={progress}

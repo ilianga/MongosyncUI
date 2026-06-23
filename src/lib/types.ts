@@ -133,6 +133,11 @@ export interface Migration {
    */
   copyProgress?: number | null;
   live?: MigrationLive | null;
+  /**
+   * View-only: compact phase-aware progress glimpse (current phase, % within the phase,
+   * and ETA) computed by GET /api/migrations from the last few metrics. Not a DB column.
+   */
+  progress?: import("./progress").ProgressGlimpse | null;
 }
 
 /** Compact live snapshot attached to a Migration for the dashboard card. */
