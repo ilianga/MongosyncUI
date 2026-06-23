@@ -1,16 +1,22 @@
-import { NextRequest, NextResponse } from "next/server";
 import { initApp } from "@/lib/init";
 import { checkCredentials } from "@/lib/auth";
 import { createSession, SESSION_COOKIE } from "@/lib/session";
+import { z } from "zod";
+import { handle, jsonOk, jsonError, readJson } from "@/lib/api";
 
-export async function POST(request: NextRequest) {
+const bodySchema = z.object({
+  username: z.string(),
+  password: z.string(),
+});
+
+export const POST = handle(async (request: Request) => {
   initApp(); // ensures admin/admin is seeded on a fresh install
-  const { username, password } = await request.json();
-  if (typeof username !== "string" || typeof password !== "string" || !checkCredentials(username, password)) {
-    return NextResponse.json({ error: "Invalid username or password" }, { status: 401 });
+  const { username, password } = await readJson(request, bodySchema);
+  if (!checkCredentials(username, password)) {
+    return jsonError("Invalid username or password", 401);
   }
   const token = await createSession(username);
-  const res = NextResponse.json({ ok: true });
+  const res = jsonOk({ ok: true });
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
@@ -18,4 +24,4 @@ export async function POST(request: NextRequest) {
     maxAge: 60 * 60 * 24 * 7,
   });
   return res;
-}
+});

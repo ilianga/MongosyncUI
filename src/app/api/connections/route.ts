@@ -1,21 +1,14 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getConnections, createSavedConnection } from "@/lib/db";
 import { savedConnectionSchema } from "@/lib/schemas";
+import { handle, jsonOk, readJson } from "@/lib/api";
 
 // GET — list saved connections. POST — create one. Auth middleware gates /api/*.
-export async function GET() {
-  return NextResponse.json(getConnections());
-}
+export const GET = handle(async () => {
+  return jsonOk(getConnections());
+});
 
-export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null);
-  const parsed = savedConnectionSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid connection" },
-      { status: 400 }
-    );
-  }
-  const created = createSavedConnection(parsed.data);
-  return NextResponse.json(created, { status: 201 });
-}
+export const POST = handle(async (request: Request) => {
+  const data = await readJson(request, savedConnectionSchema);
+  const created = createSavedConnection(data);
+  return jsonOk(created, 201);
+});

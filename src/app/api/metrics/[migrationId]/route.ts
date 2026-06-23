@@ -1,8 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getMetrics } from "@/lib/db";
+import { handle, jsonOk, ApiError } from "@/lib/api";
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ migrationId: string }> }) {
+type Ctx = { params: Promise<{ migrationId: string }> };
+
+export const GET = handle(async (req: Request, { params }: Ctx) => {
   const { migrationId } = await params;
-  const since = req.nextUrl.searchParams.get("since");
-  return NextResponse.json(getMetrics(migrationId, since ? Number(since) : undefined));
-}
+  const sinceParam = new URL(req.url).searchParams.get("since");
+  let since: number | undefined;
+  if (sinceParam != null) {
+    const n = Number(sinceParam);
+    if (!Number.isFinite(n)) throw new ApiError("`since` must be a number", 400);
+    since = n;
+  }
+  return jsonOk(getMetrics(migrationId, since));
+});

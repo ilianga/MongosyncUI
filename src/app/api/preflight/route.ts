@@ -1,7 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
 import { runPreflight } from "@/lib/preflight";
 import { buildConnectionString, type ConnectionConfig } from "@/lib/connection";
 import type { StartConfig } from "@/lib/types";
+import { handle, jsonOk, readJson, maskError, ApiError } from "@/lib/api";
+
+type PreflightBody = {
+  sourceUri?: string;
+  destUri?: string;
+  sourceConn?: ConnectionConfig;
+  destConn?: ConnectionConfig;
+  config?: StartConfig;
+};
 
 /**
  * Run the preflight readiness check for a (prospective) migration. Accepts EITHER
@@ -10,19 +18,8 @@ import type { StartConfig } from "@/lib/types";
  * checks degrade to skip/warn rather than throwing, so failures here are limited to
  * malformed input.
  */
-export async function POST(request: NextRequest) {
-  let body: {
-    sourceUri?: string;
-    destUri?: string;
-    sourceConn?: ConnectionConfig;
-    destConn?: ConnectionConfig;
-    config?: StartConfig;
-  };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
+export const POST = handle(async (request: Request) => {
+  const body = await readJson<PreflightBody>(request);
 
   let sourceUri = body.sourceUri;
   let destUri = body.destUri;
@@ -30,13 +27,14 @@ export async function POST(request: NextRequest) {
     if (!sourceUri && body.sourceConn) sourceUri = buildConnectionString(body.sourceConn);
     if (!destUri && body.destConn) destUri = buildConnectionString(body.destConn);
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+    // maskError strips any embedded credentials before echoing the parse failure.
+    throw new ApiError(maskError(e), 400);
   }
 
   if (!sourceUri || !destUri) {
-    return NextResponse.json({ error: "source and destination (uri or conn) required" }, { status: 400 });
+    throw new ApiError("source and destination (uri or conn) required", 400);
   }
 
   const report = await runPreflight({ sourceUri, destUri, config: body.config });
-  return NextResponse.json(report);
-}
+  return jsonOk(report);
+});

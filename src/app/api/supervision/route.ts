@@ -1,18 +1,18 @@
-import { NextRequest, NextResponse } from "next/server";
 import { bootServiceStatus, installBootService, uninstallBootService } from "@/lib/os-unit";
 import { hasTmux } from "@/lib/tmux";
+import { z } from "zod";
+import { handle, jsonOk, readJson, ApiError } from "@/lib/api";
 
-export async function GET() {
-  return NextResponse.json({ ...bootServiceStatus(), tmux: hasTmux(), platform: process.platform });
-}
+export const GET = handle(async () => {
+  return jsonOk({ ...bootServiceStatus(), tmux: hasTmux(), platform: process.platform });
+});
 
-export async function POST(req: NextRequest) {
-  try {
-    const { action } = (await req.json()) as { action?: string };
-    if (action === "install") return NextResponse.json(installBootService());
-    if (action === "uninstall") return NextResponse.json(uninstallBootService());
-    return NextResponse.json({ error: "Unknown action" }, { status: 400 });
-  } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
-  }
-}
+const actionSchema = z.object({ action: z.enum(["install", "uninstall"]) });
+
+export const POST = handle(async (req: Request) => {
+  const { action } = await readJson(req, actionSchema);
+  if (action === "install") return jsonOk(installBootService());
+  if (action === "uninstall") return jsonOk(uninstallBootService());
+  // Unreachable given the schema, but keeps the exhaustiveness explicit.
+  throw new ApiError("Unknown action", 400);
+});
