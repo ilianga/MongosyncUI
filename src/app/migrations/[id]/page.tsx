@@ -290,16 +290,23 @@ export default function MigrationDetailPage() {
         <ErrorBoundary label="Per-shard instances">
           <ShardBreakdown migrationId={migration.id} sharded={!!migration.sharded} />
         </ErrorBoundary>
-        <ErrorBoundary label="Progress details">
-          <ProgressPanel
-            data={progress}
-            plannedTotalBytes={migration.plannedTotalBytes}
-            indexBuilds={indexBuilds}
-          />
-        </ErrorBoundary>
-        <ErrorBoundary label="Verification">
-          <VerificationPanel verification={progress?.progress?.verification} />
-        </ErrorBoundary>
+        {/* Single-port live panels: only meaningful for a single-instance migration.
+            Sharded migrations have no live process on the migration's own port — the
+            authoritative views are the per-shard breakdown + aggregate progress/charts. */}
+        {!migration.sharded && (
+          <>
+            <ErrorBoundary label="Progress details">
+              <ProgressPanel
+                data={progress}
+                plannedTotalBytes={migration.plannedTotalBytes}
+                indexBuilds={indexBuilds}
+              />
+            </ErrorBoundary>
+            <ErrorBoundary label="Verification">
+              <VerificationPanel verification={progress?.progress?.verification} />
+            </ErrorBoundary>
+          </>
+        )}
         <section className="space-y-3">
           <SectionHeading>Preflight</SectionHeading>
           <PreflightReportView
