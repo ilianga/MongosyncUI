@@ -58,6 +58,27 @@ enabling auth is recommended).
 - Grant `clusterMonitor` on the **destination** to enable the live in-progress
   index-build panel.
 
+## 4b. Destination can block writes (`bypassWriteBlockingMode`)
+
+**Verifies:** the destination user holds **`setUserWriteBlockMode`** and
+**`bypassWriteBlockingMode`** — mongosync enables user write-blocking on the destination at
+commit and checks these at `/start`, exiting fatally without them.
+
+This is a **separate** check from "Required privileges" and deliberately uses **no role
+fallback except `root`** — no broad role reliably implies these actions. In particular,
+Atlas's **`atlasAdmin` does not include `bypassWriteBlockingMode`**, so the general
+privilege check can pass while this one (correctly) fails.
+
+**Remediation:**
+
+- **Atlas:** keep `atlasAdmin` and add a custom role with the `bypassWriteBlockingMode`
+  action (see [troubleshooting.md](./troubleshooting.md#missing-privileges-bypasswriteblockingmode--atlas-destination)).
+- **Self-managed:** use `root`, or a role granting both `setUserWriteBlockMode` and
+  `bypassWriteBlockingMode`.
+
+Skipped when the destination is unreachable or its privileges can't be read (auth
+disabled — the Required-privileges check already fails that case).
+
 ## 5. Version compatibility (both)
 
 **Verifies:** source and destination major versions.

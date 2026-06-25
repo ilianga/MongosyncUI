@@ -19,6 +19,37 @@ authorization disabled.
 See [preflight.md](./preflight.md#4-required-privileges-source-and-destination) for the
 exact action lists.
 
+## "missing privileges ([bypassWriteBlockingMode])" — Atlas destination
+
+```
+mongosync failed to start: ... missing privileges ([bypassWriteBlockingMode]) to enable
+user write blocking on the destination; please run mongosync with a destination URI that
+includes a role authorized with the setUserWriteBlockMode and bypassWriteBlockingMode
+privileges
+```
+
+mongosync blocks writes on the destination during cutover, which needs the
+`setUserWriteBlockMode` and `bypassWriteBlockingMode` actions on the destination user.
+There is **no** mongosync option to disable this.
+
+**On Atlas this trips people up:** the `atlasAdmin` role does **not** include
+`bypassWriteBlockingMode` (it does cover `setUserWriteBlockMode`), so an `atlasAdmin` user
+still fails — note the *missing* set is just `[bypassWriteBlockingMode]`.
+
+Fix (Atlas UI, ~2 min):
+
+1. **Database Access → Custom Roles → Add New Custom Role.** Name it e.g.
+   `mongosyncBypassWriteBlock` and add the action **`bypassWriteBlockingMode`**.
+2. **Database Access → Database Users →** edit the destination user → add that custom role
+   (keep `atlasAdmin`) → Update User.
+3. Wait ~1 minute for Atlas to apply it, then retry.
+
+If the action isn't selectable in the custom-role UI, grant it via the Atlas Admin API
+(`POST .../groups/{id}/customDBRoles/roles`) or check your Atlas org role can manage
+custom DB roles. **Self-managed** destinations get these via `root` (or a custom role with
+the two actions). The preflight **"Destination can block writes"** check flags this before
+Start.
+
 ## "NotAReplicaSet" / standalone node detected
 
 mongosync requires a replica set on **both** source and destination.

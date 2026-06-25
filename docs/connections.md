@@ -76,6 +76,16 @@ complete for an unattended `mongosync` process, because there is no human to per
 device/browser login. Prefer a machine/workload identity flow if your provider supports
 one.
 
+## Atlas destinations
+
+Migrating **into** an Atlas cluster needs the destination user to have **`atlasAdmin`
+*plus* `bypassWriteBlockingMode`**. `atlasAdmin` alone is **not** enough — it doesn't
+include `bypassWriteBlockingMode`, and mongosync fatally fails at start without it. Add a
+custom role with the `bypassWriteBlockingMode` action to the user (keep `atlasAdmin`). See
+[troubleshooting.md](./troubleshooting.md#missing-privileges-bypasswriteblockingmode--atlas-destination)
+for step-by-step. (`mongodb+srv://` Atlas URIs are fully supported, including the
+connectivity test.)
+
 ## TLS / SSL
 
 Open the **TLS / SSL** section and toggle **Enable TLS/SSL**. Then:
