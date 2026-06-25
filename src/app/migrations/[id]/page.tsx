@@ -69,6 +69,49 @@ async function fetchDetail(id: string, signal: AbortSignal): Promise<DetailData>
   return { migration, metrics, progress, indexBuilds };
 }
 
+// One-click "Re-enable balancer" shown once a migration is COMMITTED. Semi-auto model:
+// the user disabled the balancer (source/dest) before start; after cutover this re-enables
+// it. POSTs {action:"enable"} for the destination and, if distinct, the source. No-ops on
+// non-sharded clusters server-side, so it's safe to offer for any COMMITTED migration.
+function ReenableBalancerButton({ migration }: { migration: Migration }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const enable = useCallback(async () => {
+    setBusy(true);
+    const uris = Array.from(
+      new Set([migration.destUri, migration.sourceUri].filter((u): u is string => !!u))
+    );
+    try {
+      const results = await Promise.all(
+        uris.map(async (uri) => {
+          const res = await fetch("/api/cluster-check/balancer", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uri, action: "enable" }),
+          });
+          const data = await res.json().catch(() => ({}));
+          return { ok: res.ok, error: data?.error as string | undefined };
+        })
+      );
+      const failed = results.find((r) => !r.ok);
+      if (failed) throw new Error(failed.error || "Failed to re-enable balancer");
+      setDone(true);
+      toast.success("Balancer re-enabled");
+    } catch (e) {
+      toast.error("Couldn't re-enable balancer", { description: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }, [migration.destUri, migration.sourceUri]);
+
+  return (
+    <Button variant="outline" size="sm" onClick={enable} disabled={busy || done}>
+      {done ? "Balancer re-enabled" : busy ? "Re-enabling…" : "Re-enable balancer"}
+    </Button>
+  );
+}
+
 // Small section label used to separate the detail page's stacked panels.
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
@@ -207,7 +250,8 @@ export default function MigrationDetailPage() {
               {destLabel}
             </p>
           </div>
-          <div className="shrink-0">
+          <div className="flex shrink-0 items-center gap-2">
+            {migration.state === "COMMITTED" && <ReenableBalancerButton migration={migration} />}
             <ActionButtons
               migration={migration}
               onAction={fetchData}
