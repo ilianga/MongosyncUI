@@ -1,4 +1,10 @@
-import { getAllMigrations, getInstances, updateMigration, insertMetric } from "./db";
+import { getAllMigrations, getInstances, updateMigration, insertMetric, hasRecentEvent } from "./db";
+import {
+  detectEvents,
+  notify,
+  type NotifiableSnapshot,
+  type EventKind,
+} from "./notifications";
 import { fetchProgress, sendCommand, isProcessAlive } from "./process-manager";
 import type { ProgressResponse } from "./process-manager";
 import { reconcile } from "./supervisor";
@@ -19,6 +25,43 @@ const RESUME_STATES = ["IDLE", "INITIALIZING"];
 
 // Per-migration count of consecutive unreachable /progress probes (in-memory).
 const unreachable = new Map<string, number>();
+
+// Last-seen notifiable snapshot per migration (in-memory), for edge-triggered event
+// detection. Cleared implicitly by process restart; the persisted dedup below backstops it.
+const lastSnapshot = new Map<string, NotifiableSnapshot>();
+
+// Persisted dedup window: don't refire the same kind for the same migration within this many
+// ms. Survives a server restart (where lastSnapshot is empty) so a re-observed-as-true signal
+// doesn't re-alert. Long enough to cover a poll gap, short enough that a genuinely new
+// occurrence (e.g. a fresh crash-loop after recovery) can re-fire.
+const DEDUP_WINDOW_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
+ * Detect notifiable transitions for one migration and fire each at most once per occurrence.
+ * Fully isolated: any failure here is swallowed so it can NEVER break the poll loop. `notify`
+ * is fire-and-forget (its own internal errors are already swallowed); we intentionally don't
+ * await it inside the per-migration probe path.
+ */
+function maybeNotify(
+  migrationId: string,
+  migrationName: string,
+  cur: NotifiableSnapshot
+): void {
+  try {
+    const prev = lastSnapshot.get(migrationId) ?? null;
+    lastSnapshot.set(migrationId, cur);
+    const fired = detectEvents(prev, cur);
+    if (fired.length === 0) return;
+    const since = Date.now() - DEDUP_WINDOW_MS;
+    for (const kind of fired as EventKind[]) {
+      // Persisted dedup: skip if we already recorded this kind for this migration recently.
+      if (hasRecentEvent(migrationId, kind, since)) continue;
+      void notify({ kind, migrationId, migrationName });
+    }
+  } catch {
+    /* notifications are best-effort — never break the poll loop */
+  }
+}
 
 export function progressToMetric(
   migrationId: string,
@@ -80,6 +123,14 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
     // Best-effort OS-level resource metrics; null result leaves the fields unset.
     const stats = await getProcessStats(m);
     insertMetric({ ...progressToMetric(m.id, resp, m.plannedTotalBytes), ...(stats ?? {}) });
+
+    // Notifiable lifecycle transitions. supervisionStatus from the DB row (set by reconcile /
+    // the wrapper); state + canCommit from the live progress.
+    maybeNotify(m.id, m.name, {
+      state: liveState ?? m.state,
+      canCommit: resp.progress?.canCommit === true,
+      supervisionStatus: m.supervisionStatus,
+    });
   } catch {
     if (!m.desiredRunning) return; // not supervised → nothing to rescue
     const name = sessionName(m.id);
@@ -174,7 +225,14 @@ async function probeSharded(m: Migration, hungTicks: number): Promise<void> {
   };
   // Only persist a metric once at least one instance has reported, so we don't write a row
   // of zeros while every instance is still initializing.
-  if (agg.reachableCount > 0) insertMetric(metric);
+  if (agg.reachableCount > 0) {
+    insertMetric(metric);
+    maybeNotify(m.id, m.name, {
+      state: agg.state,
+      canCommit: agg.canCommit === true,
+      supervisionStatus: m.supervisionStatus,
+    });
+  }
 }
 
 // Sum CPU/RSS and take the MAX uptime across a sharded migration's instance processes.

@@ -106,6 +106,35 @@ describe("pollOnce health monitoring", () => {
     expect(pm.fetchProgress).not.toHaveBeenCalled();
     expect(db.getMigration(m.id)!.pid).toBeNull();
   });
+
+  it("records a REACHED_CAN_COMMIT event the first time a migration reports canCommit", async () => {
+    const { db, id } = await withRunningMigration();
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "RUNNING", canCommit: true, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    const events = db.getEvents(10).filter((e) => e.migrationId === id);
+    expect(events.some((e) => e.kind === "REACHED_CAN_COMMIT")).toBe(true);
+  });
+
+  it("does not re-fire the same event kind on subsequent ticks (dedup)", async () => {
+    const { db, id } = await withRunningMigration();
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "RUNNING", canCommit: true, canWrite: false } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    await pollOnce();
+    await pollOnce();
+    const count = db.getEvents(50).filter((e) => e.migrationId === id && e.kind === "REACHED_CAN_COMMIT").length;
+    expect(count).toBe(1);
+  });
+
+  it("records a COMMITTED event when a migration transitions to COMMITTED", async () => {
+    const { db, id } = await withRunningMigration();
+    pm.fetchProgress.mockResolvedValue({ success: true, progress: { state: "COMMITTED", canCommit: false, canWrite: true } });
+    const { pollOnce } = await import("@/lib/poller");
+    await pollOnce();
+    const events = db.getEvents(10).filter((e) => e.migrationId === id);
+    expect(events.some((e) => e.kind === "COMMITTED")).toBe(true);
+  });
 });
 
 // ── Original progressToMetric tests (kept intact) ────────────────────────────

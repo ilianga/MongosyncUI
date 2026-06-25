@@ -15,6 +15,11 @@ const KEYS = [
   "crashLoopMax",
   "crashLoopWindowSec",
   "hungTicks",
+  // Notifications: outbound webhook + which event kinds to deliver. `notifyEvents` is a
+  // comma-separated list of EventKind values (empty/unset = all kinds enabled).
+  "notifyWebhookEnabled",
+  "notifyWebhookUrl",
+  "notifyEvents",
 ] as const;
 
 // Accept any object; unknown keys and non-string values are ignored on write (same
