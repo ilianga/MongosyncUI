@@ -336,16 +336,53 @@ export function ConnectionBuilder({
           {authMethod === "kerberos" && (
             <>
               <Field label="Principal (user@REALM)" valKey="username" w={w} setVal={setVal} />
-              <Field label="Service Name" valKey="serviceName" w={w} setVal={setVal} placeholder="mongodb" />
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Service Name" valKey="serviceName" w={w} setVal={setVal} placeholder="mongodb" />
+                <Field
+                  label="Service Realm (optional)"
+                  valKey="serviceRealm"
+                  w={w}
+                  setVal={setVal}
+                  placeholder="REALM.COM"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Canonicalize host name</Label>
+                <Switch
+                  checked={!!w("canonicalizeHostName")}
+                  onCheckedChange={(v) => setVal("canonicalizeHostName", v)}
+                />
+              </div>
             </>
           )}
-          {(authMethod === "x509" || authMethod === "oidc") && (
+          {authMethod === "x509" && (
             <Field
-              label={authMethod === "x509" ? "Username (optional, from cert if blank)" : "Username (optional)"}
+              label="Username (optional, from cert if blank)"
               valKey="username"
               w={w}
               setVal={setVal}
             />
+          )}
+          {authMethod === "oidc" && (
+            <>
+              <Field label="Username (optional)" valKey="username" w={w} setVal={setVal} />
+              <div className="grid grid-cols-2 gap-2">
+                <Field
+                  label="Environment (optional)"
+                  valKey="oidcEnvironment"
+                  w={w}
+                  setVal={setVal}
+                  placeholder="azure | gcp | k8s | test"
+                />
+                <Field
+                  label="Token Resource (optional)"
+                  valKey="oidcTokenResource"
+                  w={w}
+                  setVal={setVal}
+                  placeholder="audience / token resource"
+                />
+              </div>
+            </>
           )}
 
           {/* Mechanism + auth database (password only) */}

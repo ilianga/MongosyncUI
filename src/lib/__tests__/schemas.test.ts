@@ -77,6 +77,37 @@ describe("connToConfig", () => {
     expect(c.authMechanismProperties).toEqual({ SERVICE_NAME: "mongodb" });
   });
 
+  it("maps kerberos SERVICE_REALM and CANONICALIZE_HOST_NAME", () => {
+    const c = parse({
+      scheme: "mongodb",
+      hosts: "h:1",
+      authMethod: "kerberos",
+      username: "user@REALM",
+      serviceName: "mongodb",
+      serviceRealm: "REALM.COM",
+      canonicalizeHostName: true,
+    });
+    expect(c.authMechanismProperties).toEqual({
+      SERVICE_NAME: "mongodb",
+      SERVICE_REALM: "REALM.COM",
+      CANONICALIZE_HOST_NAME: "true",
+    });
+  });
+
+  it("maps OIDC ENVIRONMENT + TOKEN_RESOURCE into authMechanismProperties", () => {
+    const c = parse({
+      scheme: "mongodb",
+      hosts: "h:1",
+      authMethod: "oidc",
+      oidcEnvironment: "azure",
+      oidcTokenResource: "https://example.com",
+    });
+    expect(c.authMechanismProperties).toEqual({
+      ENVIRONMENT: "azure",
+      TOKEN_RESOURCE: "https://example.com",
+    });
+  });
+
   it("maps aws session token + tls CA", () => {
     const c = parse({
       scheme: "mongodb",
