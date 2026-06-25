@@ -54,6 +54,31 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: "/migrations/new-multi",
+    label: "Multi-sync",
+    exact: false,
+    icon: (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="size-4 shrink-0"
+        aria-hidden
+      >
+        {/* One source fanning out to multiple destinations */}
+        <circle cx="5" cy="12" r="2" />
+        <circle cx="19" cy="5" r="2" />
+        <circle cx="19" cy="12" r="2" />
+        <circle cx="19" cy="19" r="2" />
+        <path d="M7 12h4M11 12l6-6M11 12h6M11 12l6 6" />
+      </svg>
+    ),
+  },
+  {
     href: "/connections",
     label: "Connections",
     exact: false,

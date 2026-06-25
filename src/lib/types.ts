@@ -107,6 +107,8 @@ export interface Migration {
   sourceConn?: string | null;
   /** JSON of the structured ConnectionConfig used to build destUri (display/edit). Null for legacy rows. */
   destConn?: string | null;
+  /** Optional label tying this migration to a multi-destination group (one source → N destinations). Null when ungrouped. */
+  groupName?: string | null;
   config: string; // JSON of StartConfig
   state: MongosyncState;
   port: number;
@@ -166,6 +168,8 @@ export interface CreateMigrationInput {
   /** JSON of the structured ConnectionConfig per side (optional; null for legacy string creates). */
   sourceConn?: string | null;
   destConn?: string | null;
+  /** Optional multi-destination group label. Null/undefined for a standalone migration. */
+  groupName?: string | null;
   config: StartConfig;
   port: number;
 }

@@ -8,6 +8,7 @@ import { initApp } from "@/lib/init";
 import { hasSyncState } from "@/lib/cluster-check";
 import { computeSourceTotalBytes } from "@/lib/source-stats";
 import { buildConnectionString, type ConnectionConfig } from "@/lib/connection";
+import { sameHostSet } from "@/lib/schemas";
 import { commitStagedCerts } from "@/lib/certs";
 import type { StartConfig } from "@/lib/types";
 import { z } from "zod";
@@ -59,6 +60,8 @@ const createBodySchema = z.object({
   name: z.string().min(1, "name is required"),
   config: z.record(z.string(), z.unknown()).optional(),
   token: z.string().optional(),
+  // Optional multi-destination group label (one source → N destinations grouped in the UI).
+  groupName: z.string().min(1).optional(),
   sourceConn: z.unknown().optional(),
   destConn: z.unknown().optional(),
   sourceUri: z.unknown().optional(),
@@ -68,7 +71,7 @@ const createBodySchema = z.object({
 export const POST = handle(async (request: Request) => {
   initApp();
   const body = await readJson(request, createBodySchema);
-  const { name, config, token } = body;
+  const { name, config, token, groupName } = body;
 
   // Accept EITHER structured { sourceConn, destConn } ConnectionConfigs OR legacy
   // { sourceUri, destUri } strings (treated as raw passthrough conns). Cert paths in
@@ -79,6 +82,13 @@ export const POST = handle(async (request: Request) => {
   const destConn: ConnectionConfig =
     (body.destConn as ConnectionConfig) ??
     (typeof body.destUri === "string" ? { raw: body.destUri } : {});
+
+  // Reject a migration whose source and destination resolve to the same hosts — that is
+  // never a valid sync and is the key invariant for multi-destination groups (each
+  // destination must differ from the shared source). Compare the built connection strings.
+  if (sameHostSet(buildConnectionString(sourceConn), buildConnectionString(destConn))) {
+    return jsonError("Source and destination must be different clusters.", 400);
+  }
 
   const basePort = Number(getSetting("basePort") || "27182");
   const used = new Set(getAllMigrations().map((m) => m.port));
@@ -105,6 +115,7 @@ export const POST = handle(async (request: Request) => {
     destUri: buildConnectionString(destConn),
     sourceConn: JSON.stringify(sourceConn),
     destConn: JSON.stringify(destConn),
+    groupName: groupName ?? null,
     config: merged,
     port,
   });

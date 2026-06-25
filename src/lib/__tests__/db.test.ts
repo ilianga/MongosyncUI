@@ -163,6 +163,22 @@ describe("db", () => {
     expect(getSetting("mongosyncPath")).toBe("/opt/mongosync");
   });
 
+  it("defaults groupName to null and round-trips a set groupName", async () => {
+    const { createMigration, getMigration } = await loadDb();
+    const ungrouped = createMigration({
+      name: "solo", sourceUri: "mongodb://a", destUri: "mongodb://b", config: {}, port: 27182,
+    });
+    expect(ungrouped.groupName).toBeNull();
+    expect(getMigration(ungrouped.id)!.groupName).toBeNull();
+
+    const grouped = createMigration({
+      name: "fan", sourceUri: "mongodb://a", destUri: "mongodb://c", config: {}, port: 27183,
+      groupName: "Fan-out 1",
+    });
+    expect(grouped.groupName).toBe("Fan-out 1");
+    expect(getMigration(grouped.id)!.groupName).toBe("Fan-out 1");
+  });
+
   it("creates migrations with supervision defaults", async () => {
     const { createMigration } = await loadDb();
     const m = createMigration({
