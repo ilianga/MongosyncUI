@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Topbar } from "@/components/app-shell/topbar";
+import { SessionsPanel } from "@/components/sessions-panel";
 import { usePolling } from "@/hooks/use-polling";
 import { toast } from "sonner";
 
@@ -451,6 +452,8 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        <SessionsPanel />
 
         <Button onClick={save} disabled={saving}>{saving ? "Saving..." : "Save Settings"}</Button>
       </div>
