@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Topbar } from "@/components/app-shell/topbar";
 import { usePolling } from "@/hooks/use-polling";
@@ -23,6 +24,9 @@ interface Settings {
   crashLoopMax: string;
   crashLoopWindowSec: string;
   hungTicks: string;
+  notifyWebhookEnabled: string;
+  notifyWebhookUrl: string;
+  notifyEvents: string;
 }
 
 const DEFAULTS: Settings = {
@@ -31,7 +35,20 @@ const DEFAULTS: Settings = {
   defaultVerification: "true", defaultDisableTelemetry: "false",
   supervisionMode: "supervised", backoffCapSec: "60", crashLoopMax: "5",
   crashLoopWindowSec: "300", hungTicks: "6",
+  notifyWebhookEnabled: "false", notifyWebhookUrl: "", notifyEvents: "",
 };
+
+// Notifiable event kinds, mirrored from src/lib/notifications.ts (kept in sync manually so
+// this client component doesn't import server DB code). `notifyEvents` stores a comma-list;
+// empty = all enabled.
+const EVENT_OPTIONS: { kind: string; label: string }[] = [
+  { kind: "REACHED_CAN_COMMIT", label: "Ready to commit" },
+  { kind: "COMMITTED", label: "Cutover committed" },
+  { kind: "CRASH_LOOPING", label: "Crash looping" },
+  { kind: "LAG_SPIKE", label: "Lag spike" },
+  { kind: "LOW_OPLOG", label: "Low oplog window" },
+];
+const ALL_EVENT_KINDS = EVENT_OPTIONS.map((o) => o.kind);
 
 const selectClass =
   "w-full bg-background border border-input rounded-md px-2 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -45,6 +62,10 @@ export default function SettingsPage() {
   const [boot, setBoot] = useState<{ installed: boolean; path: string; tmux: boolean; platform: string } | null>(null);
   const [cred, setCred] = useState({ currentPassword: "", username: "admin", password: "" });
   const [savingCred, setSavingCred] = useState(false);
+  const [testingHook, setTestingHook] = useState(false);
+  const [browserNotify, setBrowserNotify] = useState<boolean>(
+    () => typeof window !== "undefined" && localStorage.getItem("notifyBrowser") === "true"
+  );
 
   // One-shot loads (no interval) via usePolling: gives us abort-on-unmount and a
   // settled loading state. State is seeded inside the async fetcher (not a
@@ -72,6 +93,51 @@ export default function SettingsPage() {
   usePolling(loadBoot, { intervalMs: 0 });
 
   const set = (k: keyof Settings) => (v: string) => setS((prev) => ({ ...prev, [k]: v }));
+
+  // notifyEvents stores a comma-separated kind list; empty string means "all enabled".
+  const isEventEnabled = (kind: string): boolean => {
+    const raw = s.notifyEvents.trim();
+    if (raw === "") return true;
+    return raw.split(",").map((x) => x.trim()).includes(kind);
+  };
+  const toggleEvent = (kind: string) => (checked: boolean) => {
+    // Normalize empty (= all) to the full list before toggling so the change is explicit.
+    const current = s.notifyEvents.trim() === ""
+      ? new Set(ALL_EVENT_KINDS)
+      : new Set(s.notifyEvents.split(",").map((x) => x.trim()).filter(Boolean));
+    if (checked) current.add(kind); else current.delete(kind);
+    set("notifyEvents")(ALL_EVENT_KINDS.filter((k) => current.has(k)).join(","));
+  };
+
+  const toggleBrowserNotify = async (on: boolean) => {
+    if (on && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        toast.error("Browser notifications blocked", { description: "Permission was not granted." });
+        return;
+      }
+    }
+    setBrowserNotify(on);
+    if (typeof window !== "undefined") localStorage.setItem("notifyBrowser", String(on));
+  };
+
+  const testWebhook = async () => {
+    setTestingHook(true);
+    try {
+      const res = await fetch("/api/notifications/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: s.notifyWebhookUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to send test");
+      toast.success("Test notification sent");
+    } catch (e) {
+      toast.error("Test failed", { description: (e as Error).message });
+    } finally {
+      setTestingHook(false);
+    }
+  };
 
   const toggleBoot = async (action: "install" | "uninstall") => {
     try {
@@ -324,6 +390,64 @@ export default function SettingsPage() {
               {boot?.installed
                 ? <Button variant="outline" onClick={() => toggleBoot("uninstall")}>Remove boot service</Button>
                 : <Button variant="outline" onClick={() => toggleBoot("install")}>Install boot service</Button>}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Notifications</CardTitle>
+            <CardDescription>
+              Get alerted on important migration events — without babysitting long syncs. Events
+              appear in the in-app bell; optionally POST them to a Slack/Discord/generic webhook.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="notifyWebhookEnabled">Enable outbound webhook</Label>
+              <Switch id="notifyWebhookEnabled" checked={s.notifyWebhookEnabled === "true"}
+                onCheckedChange={(v) => set("notifyWebhookEnabled")(String(v))} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="notifyWebhookUrl">Webhook URL</Label>
+              <div className="flex gap-2">
+                <Input id="notifyWebhookUrl" value={s.notifyWebhookUrl} className="font-mono"
+                  placeholder="https://hooks.slack.com/services/..."
+                  onChange={(e) => set("notifyWebhookUrl")(e.target.value)} />
+                <Button variant="outline" onClick={testWebhook}
+                  disabled={testingHook || s.notifyWebhookUrl.trim() === ""}>
+                  {testingHook ? "Sending..." : "Send test"}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A JSON payload with a Slack/Discord-compatible <span className="font-mono">text</span> field plus
+                structured event fields is POSTed. Save settings before relying on it (the test uses the URL above).
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Events to notify on</Label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {EVENT_OPTIONS.map((opt) => (
+                  <label key={opt.kind} className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={isEventEnabled(opt.kind)}
+                      onCheckedChange={(v) => toggleEvent(opt.kind)(Boolean(v))} />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Applies to both the in-app feed and the webhook.
+              </p>
+            </div>
+            <div className="flex items-center justify-between border-t border-border pt-4">
+              <div>
+                <p className="text-sm font-medium">Browser notifications</p>
+                <p className="text-xs text-muted-foreground">
+                  Raise a desktop notification for new events while this tab is open (best-effort).
+                </p>
+              </div>
+              <Switch id="browserNotify" checked={browserNotify}
+                onCheckedChange={(v) => toggleBrowserNotify(Boolean(v))} />
             </div>
           </CardContent>
         </Card>

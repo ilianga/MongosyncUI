@@ -99,6 +99,18 @@ function initSchema(database: Database.Database): void {
       createdAt INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_instances_migration ON instances(migrationId);
+    -- In-app notification feed. Events are a LOG: we intentionally DO NOT cascade-delete with
+    -- the parent migration (migrationId is stored loosely, no FK) so the lifecycle history of a
+    -- deleted migration survives. createdAt drives ordering; readAt NULL = unread.
+    CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      migrationId TEXT,
+      kind TEXT NOT NULL,
+      message TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      readAt INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_events_createdAt ON events(createdAt);
   `);
   migrateSchema(database);
 }
@@ -145,6 +157,20 @@ function migrateSchema(database: Database.Database): void {
   if (!metricCols.has("uptimeSec")) {
     database.exec("ALTER TABLE metrics ADD COLUMN uptimeSec INTEGER");
   }
+
+  // events table: created in initSchema via CREATE TABLE IF NOT EXISTS, but guard here too so
+  // a DB created before the notifications feature picks it up idempotently on next open.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      migrationId TEXT,
+      kind TEXT NOT NULL,
+      message TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      readAt INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_events_createdAt ON events(createdAt);
+  `);
 }
 
 export function createMigration(input: CreateMigrationInput): Migration {
@@ -294,6 +320,78 @@ export function setSetting(key: string, value: string): void {
       "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     )
     .run(key, value);
+}
+
+// ── Notification events (in-app feed) ──
+// A persisted log of important migration lifecycle events. Kept even after a migration is
+// deleted (migrationId stored loosely, no FK / cascade). See the `events` table comment.
+
+export interface EventRow {
+  id: string;
+  migrationId: string | null;
+  kind: string;
+  message: string;
+  createdAt: number;
+  readAt: number | null;
+}
+
+/** Insert a new event and return the stored row. */
+export function insertEvent(input: {
+  migrationId: string | null;
+  kind: string;
+  message: string;
+}): EventRow {
+  const row: EventRow = {
+    id: nanoid(),
+    migrationId: input.migrationId ?? null,
+    kind: input.kind,
+    message: input.message,
+    createdAt: Date.now(),
+    readAt: null,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO events (id, migrationId, kind, message, createdAt, readAt)
+       VALUES (@id, @migrationId, @kind, @message, @createdAt, @readAt)`
+    )
+    .run(row);
+  return row;
+}
+
+/** Most recent `limit` events, newest first. */
+export function getEvents(limit = 50): EventRow[] {
+  return getDb()
+    .prepare("SELECT * FROM events ORDER BY createdAt DESC LIMIT ?")
+    .all(limit) as EventRow[];
+}
+
+/** Count of unread (readAt IS NULL) events. */
+export function getUnreadEventCount(): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS n FROM events WHERE readAt IS NULL")
+    .get() as { n: number };
+  return row.n;
+}
+
+/** Mark all currently-unread events as read. Returns the number marked. */
+export function markEventsRead(): number {
+  const info = getDb()
+    .prepare("UPDATE events SET readAt = ? WHERE readAt IS NULL")
+    .run(Date.now());
+  return info.changes;
+}
+
+/**
+ * Has an event of this kind already been recorded for this migration since `since`? Used by
+ * the poller to dedup one-shot lifecycle events (don't refire the same kind per occurrence).
+ */
+export function hasRecentEvent(migrationId: string, kind: string, since: number): boolean {
+  const row = getDb()
+    .prepare(
+      "SELECT 1 FROM events WHERE migrationId = ? AND kind = ? AND createdAt >= ? LIMIT 1"
+    )
+    .get(migrationId, kind, since);
+  return row !== undefined;
 }
 
 // ── Saved connections (reusable, colour-tagged) ──

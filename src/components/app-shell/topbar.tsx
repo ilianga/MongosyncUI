@@ -1,4 +1,5 @@
 import { RunningIndicator } from "./running-indicator"
+import { NotificationBell } from "./notification-bell"
 
 interface TopbarProps {
   title: string
@@ -17,6 +18,7 @@ export function Topbar({ title, subtitle, action }: TopbarProps) {
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-3">
         {action}
+        <NotificationBell />
         <RunningIndicator />
       </div>
     </div>
