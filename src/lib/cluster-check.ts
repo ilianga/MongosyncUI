@@ -1,5 +1,7 @@
 import net from "node:net";
-import { runMongoshEval, runMongoshJson } from "./mongosh";
+import { promises as dns } from "node:dns";
+import { runMongoshEval, runMongoshJson, isMongoshNotFound } from "./mongosh";
+import { maskUri } from "./format";
 
 export interface ClusterCheck {
   reachable: boolean;
@@ -11,7 +13,8 @@ export interface ClusterCheck {
   error?: string;
 }
 
-export function parseMongoUri(uri: string): { hosts: string[] } {
+export function parseMongoUri(uri: string): { hosts: string[]; srv: boolean } {
+  const srv = /^mongodb\+srv:\/\//i.test(uri);
   const withoutScheme = uri.replace(/^mongodb(\+srv)?:\/\//, "");
   const afterAuth = withoutScheme.includes("@")
     ? withoutScheme.slice(withoutScheme.indexOf("@") + 1)
@@ -21,7 +24,36 @@ export function parseMongoUri(uri: string): { hosts: string[] } {
     const trimmed = h.trim();
     return trimmed.includes(":") ? trimmed : `${trimmed}:27017`;
   });
-  return { hosts };
+  return { hosts, srv };
+}
+
+/**
+ * Reachability pre-check. For `mongodb+srv://`, the bare SRV hostname has no A record
+ * and accepts no connections — TCP-probing it always fails. Resolve the DNS SRV record
+ * instead. For direct/replica-set URIs, TCP-probe the first host:port. The authoritative
+ * check is still the mongosh handshake in checkCluster; this just fails fast & clearly.
+ */
+export async function probeReachable(uri: string): Promise<{ reachable: boolean; error?: string }> {
+  let parsed: { hosts: string[]; srv: boolean };
+  try {
+    parsed = parseMongoUri(uri);
+  } catch {
+    return { reachable: false, error: "Could not parse URI" };
+  }
+  const first = parsed.hosts[0] ?? "";
+  if (parsed.srv) {
+    const domain = first.split(":")[0];
+    try {
+      const records = await dns.resolveSrv(`_mongodb._tcp.${domain}`);
+      if (records && records.length > 0) return { reachable: true };
+      return { reachable: false, error: `No SRV records found for ${domain}` };
+    } catch {
+      return { reachable: false, error: `Cannot resolve SRV record for ${domain}` };
+    }
+  }
+  const [host, portStr] = first.split(":");
+  const ok = await tcpProbe(host, Number(portStr));
+  return ok ? { reachable: true } : { reachable: false, error: `Cannot reach ${first}` };
 }
 
 function tcpProbe(host: string, port: number, timeoutMs = 4000): Promise<boolean> {
@@ -67,17 +99,11 @@ export async function dropSyncState(uri: string): Promise<void> {
 }
 
 export async function checkCluster(uri: string): Promise<ClusterCheck> {
-  let hosts: string[];
-  try {
-    hosts = parseMongoUri(uri).hosts;
-  } catch {
-    return { reachable: false, error: "Could not parse URI" };
-  }
-  const [host, portStr] = hosts[0].split(":");
-  const reachable = await tcpProbe(host, Number(portStr));
-  if (!reachable) return { reachable: false, error: `Cannot reach ${hosts[0]}` };
+  // SRV-aware reachability (DNS SRV for mongodb+srv, TCP for direct hosts).
+  const probe = await probeReachable(uri);
+  if (!probe.reachable) return { reachable: false, error: probe.error };
 
-  // Best-effort probe via mongosh if present; failure is non-fatal. We read both
+  // Authoritative probe via mongosh. We read both
   // the version and replica-set membership in one shot. mongosync requires BOTH
   // source and destination to be replica sets (it reads the oplog / uses read
   // concern), so a standalone node fails fatally at init with NotAReplicaSet —
@@ -94,7 +120,11 @@ export async function checkCluster(uri: string): Promise<ClusterCheck> {
         "Node is a standalone, not a replica set. mongosync requires a replica set on both source and destination. Restart mongod with --replSet and run rs.initiate().";
     }
     return result;
-  } catch {
-    return { reachable: true };
+  } catch (e) {
+    // mongosh missing → can't verify, but the pre-check passed, so report reachable.
+    if (isMongoshNotFound(e)) return { reachable: true };
+    // mongosh ran but the handshake failed (auth, TLS, IP allow-list, timeout) — for SRV
+    // there was no TCP confirmation, so surface the real reason rather than a false "ok".
+    return { reachable: false, error: maskUri((e as Error).message) };
   }
 }

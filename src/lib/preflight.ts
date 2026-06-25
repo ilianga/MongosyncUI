@@ -1,6 +1,5 @@
-import net from "node:net";
 import { buildConnectionString, type ConnectionConfig } from "./connection";
-import { parseMongoUri, MONGOSYNC_STATE_DB } from "./cluster-check";
+import { probeReachable, MONGOSYNC_STATE_DB } from "./cluster-check";
 import type { StartConfig } from "./types";
 import { runMongoshEval } from "./mongosh";
 
@@ -142,21 +141,6 @@ export function summarize(checks: PreflightCheck[]): "pass" | "warn" | "fail" {
 // Fact gathering (one mongosh eval per side)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function tcpProbe(host: string, port: number, timeoutMs = 4000): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    const done = (ok: boolean) => {
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-    socket.connect(port, host);
-  });
-}
-
 // A single eval that returns every fact we need. Errors inside (e.g. not
 // authorized for connectionStatus showPrivileges) are caught per-field so a
 // partial result still comes back as JSON.
@@ -229,17 +213,11 @@ const FACTS_EVAL = `
 `;
 
 async function gatherFacts(uri: string): Promise<ClusterFacts> {
-  // Reachability via TCP probe first so a wholly-unreachable host fails fast and
-  // clearly instead of waiting on mongosh's longer connect timeout.
-  let reachable = false;
-  try {
-    const hosts = parseMongoUri(uri).hosts;
-    const [host, portStr] = hosts[0].split(":");
-    reachable = await tcpProbe(host, Number(portStr));
-  } catch {
-    return { reachable: false, error: "Could not parse URI" };
-  }
-  if (!reachable) return { reachable: false, error: "TCP connection refused or timed out" };
+  // SRV-aware reachability pre-check (DNS SRV for mongodb+srv, TCP for direct hosts) so a
+  // wholly-unreachable host fails fast & clearly instead of waiting on mongosh's timeout —
+  // and so Atlas (mongodb+srv) isn't wrongly rejected by a TCP probe of the bare SRV domain.
+  const probe = await probeReachable(uri);
+  if (!probe.reachable) return { reachable: false, error: probe.error };
 
   try {
     const stdout = await runMongoshEval(uri, FACTS_EVAL, { timeoutMs: 12000 });
