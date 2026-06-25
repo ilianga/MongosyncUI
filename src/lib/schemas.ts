@@ -23,7 +23,13 @@ export const connectionSchema = z
     authSource: z.string().default(""),
     authMechanism: z.enum(["DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256"]).default("DEFAULT"),
     serviceName: z.string().default(""), // kerberos SERVICE_NAME
+    // Additive auth fields are .optional() (not .default) so existing callers that build the
+    // form-values object literally (e.g. saved-connections page) don't have to enumerate them.
+    serviceRealm: z.string().optional(), // kerberos SERVICE_REALM
+    canonicalizeHostName: z.boolean().optional(), // kerberos CANONICALIZE_HOST_NAME
     awsSessionToken: z.string().default(""),
+    oidcEnvironment: z.string().optional(), // OIDC ENVIRONMENT (azure | gcp | k8s | test)
+    oidcTokenResource: z.string().optional(), // OIDC TOKEN_RESOURCE (audience)
     tlsEnabled: z.boolean().default(false),
     tlsCaFile: z.string().default(""), // staged absolute path (set after upload)
     tlsCertKeyFile: z.string().default(""), // staged absolute path (set after upload)
@@ -62,9 +68,17 @@ export function connToConfig(c: ConnectionFormValues): ConnectionConfig {
   }
 
   const props: Record<string, string> = {};
-  if (c.authMethod === "kerberos" && c.serviceName.trim()) props.SERVICE_NAME = c.serviceName.trim();
+  if (c.authMethod === "kerberos") {
+    if (c.serviceName.trim()) props.SERVICE_NAME = c.serviceName.trim();
+    if (c.serviceRealm?.trim()) props.SERVICE_REALM = c.serviceRealm.trim();
+    if (c.canonicalizeHostName) props.CANONICALIZE_HOST_NAME = "true";
+  }
   if (c.authMethod === "aws" && c.awsSessionToken.trim())
     props.AWS_SESSION_TOKEN = c.awsSessionToken.trim();
+  if (c.authMethod === "oidc") {
+    if (c.oidcEnvironment?.trim()) props.ENVIRONMENT = c.oidcEnvironment.trim();
+    if (c.oidcTokenResource?.trim()) props.TOKEN_RESOURCE = c.oidcTokenResource.trim();
+  }
   if (Object.keys(props).length) conn.authMechanismProperties = props;
 
   if (c.tlsEnabled) {
@@ -94,7 +108,11 @@ export function configToConnForm(conn: ConnectionConfig): ConnectionFormValues {
     authSource: conn.authSource ?? "",
     authMechanism: conn.authMechanism ?? "DEFAULT",
     serviceName: props.SERVICE_NAME ?? "",
+    serviceRealm: props.SERVICE_REALM ?? "",
+    canonicalizeHostName: props.CANONICALIZE_HOST_NAME === "true",
     awsSessionToken: props.AWS_SESSION_TOKEN ?? "",
+    oidcEnvironment: props.ENVIRONMENT ?? "",
+    oidcTokenResource: props.TOKEN_RESOURCE ?? "",
     tlsEnabled: conn.tls?.enabled ?? false,
     tlsCaFile: conn.tls?.caFile ?? "",
     tlsCertKeyFile: conn.tls?.certKeyFile ?? "",
