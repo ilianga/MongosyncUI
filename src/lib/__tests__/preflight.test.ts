@@ -96,6 +96,7 @@ const goodFacts = (over: Partial<ClusterFacts> = {}): ClusterFacts => ({
   userDatabases: [],
   hasSyncState: false,
   oplogWindowSec: 7200,
+  isSharded: false,
   ...over,
 });
 
@@ -184,5 +185,74 @@ describe("deriveChecks", () => {
     const dest = goodFacts({ error: "Authentication failed: bad auth", authenticated: false });
     const checks = deriveChecks(goodFacts(), dest, {});
     expect(byId(checks, "authenticated.destination").status).toBe("fail");
+  });
+
+  // ── sharded-cluster checks: balancer state + shard zone tags ───────────────
+
+  const shardedOff = (over: Partial<ClusterFacts> = {}): ClusterFacts =>
+    goodFacts({ isSharded: true, balancerEnabled: false, zoneTagNamespaces: [], ...over });
+
+  it("non-sharded clusters skip the balancer and zone-tag checks", () => {
+    const checks = deriveChecks(goodFacts(), goodFacts(), {});
+    expect(byId(checks, "balancerState.source").status).toBe("skip");
+    expect(byId(checks, "balancerState.destination").status).toBe("skip");
+    expect(byId(checks, "shardZoneTags").status).toBe("skip");
+    expect(byId(checks, "balancerState.source").detail).toMatch(/Not a sharded cluster/);
+  });
+
+  it("sharded clusters with balancer off pass the balancer checks", () => {
+    const checks = deriveChecks(shardedOff(), shardedOff(), {});
+    expect(byId(checks, "balancerState.source").status).toBe("pass");
+    expect(byId(checks, "balancerState.destination").status).toBe("pass");
+  });
+
+  it("destination balancer on fails", () => {
+    const checks = deriveChecks(shardedOff(), shardedOff({ balancerEnabled: true }), {});
+    const c = byId(checks, "balancerState.destination");
+    expect(c.status).toBe("fail");
+    expect(c.remediation).toMatch(/15 min/);
+    expect(summarize(checks)).toBe("fail");
+  });
+
+  it("source balancer on with no namespace filter fails", () => {
+    const checks = deriveChecks(shardedOff({ balancerEnabled: true }), shardedOff(), {});
+    const c = byId(checks, "balancerState.source");
+    expect(c.status).toBe("fail");
+    expect(c.remediation).toMatch(/15 min/);
+  });
+
+  it("source balancer on with a namespace filter warns (include)", () => {
+    const config = { includeNamespaces: [{ database: "app" }] };
+    const checks = deriveChecks(shardedOff({ balancerEnabled: true }), shardedOff(), config);
+    const c = byId(checks, "balancerState.source");
+    expect(c.status).toBe("warn");
+    expect(c.remediation).toMatch(/disableBalancing|in-scope|filtered/i);
+  });
+
+  it("source balancer on with an exclude filter also warns", () => {
+    const config = { excludeNamespaces: [{ database: "logs" }] };
+    const checks = deriveChecks(shardedOff({ balancerEnabled: true }), shardedOff(), config);
+    expect(byId(checks, "balancerState.source").status).toBe("warn");
+  });
+
+  it("destination shard zone/tag ranges fail", () => {
+    const dest = shardedOff({ zoneTagNamespaces: ["app.orders"] });
+    const checks = deriveChecks(shardedOff(), dest, {});
+    const c = byId(checks, "shardZoneTags");
+    expect(c.status).toBe("fail");
+    expect(c.detail).toMatch(/app\.orders/);
+    expect(c.remediation).toMatch(/COMMITTED/);
+    expect(summarize(checks)).toBe("fail");
+  });
+
+  it("sharded destination with no zone tags passes", () => {
+    const checks = deriveChecks(shardedOff(), shardedOff(), {});
+    expect(byId(checks, "shardZoneTags").status).toBe("pass");
+  });
+
+  it("unreachable sharded side skips the new checks", () => {
+    const checks = deriveChecks(shardedOff(), { reachable: false, error: "refused" }, {});
+    expect(byId(checks, "balancerState.destination").status).toBe("skip");
+    expect(byId(checks, "shardZoneTags").status).toBe("skip");
   });
 });

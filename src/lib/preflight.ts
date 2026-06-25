@@ -53,6 +53,12 @@ export interface ClusterFacts {
   hasSyncState?: boolean;
   /** Oplog window in seconds (last ts − first ts). */
   oplogWindowSec?: number | null;
+  /** True if this is a sharded cluster (connected via mongos / config.shards present). */
+  isSharded?: boolean;
+  /** True if the cluster balancer is currently enabled. Only meaningful when sharded. */
+  balancerEnabled?: boolean;
+  /** Namespaces ("db.coll") that have shard zone/tag ranges configured (from config.tags). */
+  zoneTagNamespaces?: string[];
   /** Error string when the eval failed (mongosh missing, auth failed, etc.). */
   error?: string;
 }
@@ -190,6 +196,34 @@ const FACTS_EVAL = `
     if (!first || !last || !first.ts || !last.ts) return null;
     return last.ts.t - first.ts.t;
   }, null);
+  // Sharded-cluster facts. On a replica set these resolve to "not sharded" defaults
+  // (config.shards is absent / hello().msg !== 'isdbgrid'), so the derived checks skip.
+  out.isSharded = await safe(function () {
+    var h = db.hello();
+    if (h && h.msg === 'isdbgrid') return true;
+    // Fallback: a populated config.shards collection means a sharded cluster.
+    var cfg = db.getSiblingDB('config');
+    return cfg.shards.countDocuments({}, { limit: 1 }) > 0;
+  }, false);
+  // Balancer state: prefer config.settings {_id:'balancer'} (stopped:true => disabled);
+  // fall back to sh.getBalancerState(). Default true (assume on) so we err toward warning.
+  out.balancerEnabled = await safe(function () {
+    var s = db.getSiblingDB('config').settings.findOne({ _id: 'balancer' });
+    if (s && typeof s.stopped === 'boolean') return !s.stopped;
+    if (typeof sh !== 'undefined' && sh.getBalancerState) return !!sh.getBalancerState();
+    return true;
+  }, true);
+  // Shard zone/tag ranges configured on the destination (config.tags). Each entry's
+  // ns is "db.coll"; presence blocks mongosync from migrating into that namespace.
+  out.zoneTagNamespaces = await safe(function () {
+    var tags = db.getSiblingDB('config').tags.find({}, { ns: 1 }).toArray();
+    var seen = {};
+    var nss = [];
+    tags.forEach(function (t) {
+      if (t && t.ns && !seen[t.ns]) { seen[t.ns] = 1; nss.push(t.ns); }
+    });
+    return nss;
+  }, []);
   return JSON.stringify(out);
 })()
 `;
@@ -517,6 +551,107 @@ export function deriveChecks(
     }
   }
 
+  // 9. balancerState (per side, sharded-aware)
+  const filtered = isNamespaceFiltered(config);
+  for (const [side, facts] of sides) {
+    const label = `${cap(side)} balancer is off for migration`;
+    if (!facts.reachable) {
+      checks.push(skip(`balancerState.${side}`, label, side, "Cluster unreachable; skipped."));
+      continue;
+    }
+    if (facts.isSharded === undefined) {
+      checks.push(skip(`balancerState.${side}`, label, side, facts.error || "Could not determine cluster topology."));
+      continue;
+    }
+    if (!facts.isSharded) {
+      checks.push(skip(`balancerState.${side}`, label, side, "Not a sharded cluster."));
+      continue;
+    }
+    if (facts.balancerEnabled === undefined) {
+      checks.push(skip(`balancerState.${side}`, label, side, facts.error || "Could not read balancer state."));
+      continue;
+    }
+    const balancerOff = !facts.balancerEnabled;
+    if (balancerOff) {
+      checks.push({
+        id: `balancerState.${side}`,
+        label,
+        side,
+        status: "pass",
+        detail: "Balancer is off.",
+      });
+      continue;
+    }
+    // Balancer is ON.
+    const stopRemediation =
+      "Stop the balancer (sh.stopBalancer() / the balancerStop command) and wait ~15 minutes for in-flight chunk migrations to finish before starting the sync.";
+    if (side === "destination") {
+      checks.push({
+        id: `balancerState.${side}`,
+        label,
+        side,
+        status: "fail",
+        detail: "Destination balancer is on. mongosync requires the destination balancer to be off before sync.",
+        remediation: stopRemediation,
+      });
+    } else if (filtered) {
+      // Filtered source sync: the global balancer may stay on, but balancing must be
+      // disabled for the in-scope (filtered) collections.
+      checks.push({
+        id: `balancerState.${side}`,
+        label,
+        side,
+        status: "warn",
+        detail:
+          "Source balancer is on. For a namespace-filtered sync the global source balancer may stay on, but balancing must be disabled for the collections in scope.",
+        remediation:
+          "Disable balancing for each filtered (in-scope) collection (sh.disableBalancing('db.coll')) before starting the sync.",
+      });
+    } else {
+      checks.push({
+        id: `balancerState.${side}`,
+        label,
+        side,
+        status: "fail",
+        detail:
+          "Source balancer is on and the sync is not namespace-filtered. mongosync requires the source balancer to be off for a full (unfiltered) sync.",
+        remediation: stopRemediation,
+      });
+    }
+  }
+
+  // 10. shardZoneTags (destination, sharded-aware)
+  {
+    const label = "Destination has no shard zone/tag ranges";
+    if (!dest.reachable) {
+      checks.push(skip("shardZoneTags", label, "destination", "Cluster unreachable; skipped."));
+    } else if (dest.isSharded === undefined) {
+      checks.push(skip("shardZoneTags", label, "destination", dest.error || "Could not determine cluster topology."));
+    } else if (!dest.isSharded) {
+      checks.push(skip("shardZoneTags", label, "destination", "Not a sharded cluster."));
+    } else if (dest.zoneTagNamespaces === undefined) {
+      checks.push(skip("shardZoneTags", label, "destination", dest.error || "Could not read shard zone/tag ranges."));
+    } else if (dest.zoneTagNamespaces.length === 0) {
+      checks.push({
+        id: "shardZoneTags",
+        label,
+        side: "destination",
+        status: "pass",
+        detail: "No shard zone/tag ranges configured on the destination.",
+      });
+    } else {
+      checks.push({
+        id: "shardZoneTags",
+        label,
+        side: "destination",
+        status: "fail",
+        detail: `Destination has shard zone/tag ranges (${dest.zoneTagNamespaces.join(", ")}). mongosync cannot migrate into namespaces with pre-configured zone/tag ranges.`,
+        remediation:
+          "Remove the shard zone/tag ranges before migrating, then re-add them after the sync reaches COMMITTED.",
+      });
+    }
+  }
+
   return checks;
 }
 
@@ -561,6 +696,11 @@ export async function runPreflight(input: PreflightInput): Promise<PreflightRepo
 
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** True when the sync restricts namespaces via include/exclude filters. */
+function isNamespaceFiltered(config: StartConfig): boolean {
+  return (config.includeNamespaces?.length ?? 0) > 0 || (config.excludeNamespaces?.length ?? 0) > 0;
 }
 
 function skip(id: string, label: string, side: PreflightSide, detail: string): PreflightCheck {
