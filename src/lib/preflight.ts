@@ -99,6 +99,14 @@ export const SUFFICIENT_ROLES = {
   destination: ["root", "readWriteAnyDatabase", "restore", "clusterManager"],
 } as const;
 
+// Destination actions mongosync needs to enable user write-blocking at commit. Checked
+// directly (no role fallback) because no built-in role reliably implies them — Atlas's
+// atlasAdmin in particular does NOT, which is exactly the gap users hit.
+export const WRITE_BLOCKING_ACTIONS = ["setUserWriteBlockMode", "bypassWriteBlockingMode"] as const;
+// Only the superuser `root` reliably implies the write-blocking actions; everything else
+// (atlasAdmin, readWriteAnyDatabase, restore, …) must enumerate them explicitly.
+export const WRITE_BLOCKING_ROLES = ["root"] as const;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure logic (unit-tested)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -396,6 +404,51 @@ export function deriveChecks(
             ? "Grant clusterManager + readWriteAnyDatabase + clusterMonitor + backup + restore on the destination (or root for local testing)."
             : "Grant read roles (readAnyDatabase / clusterMonitor / backup) on the source (or root for local testing).",
       });
+    }
+  }
+
+  // 4b. write-blocking privileges (destination) — mongosync enables user write-blocking on
+  // the destination at commit and checks the privilege at /start; without it mongosync fatally
+  // exits ("missing privileges ([bypassWriteBlockingMode])"). NO role fallback here: no built-in
+  // role reliably grants these (notably Atlas's atlasAdmin does NOT), so the general privileges
+  // check can pass via its role shortcut while these are still missing — check the actions directly.
+  {
+    if (!dest.reachable || dest.privileges === undefined) {
+      checks.push(
+        skip("writeBlocking", "Destination can block writes (bypassWriteBlockingMode)", "destination",
+          dest.reachable ? dest.error || "Could not read privileges." : "Cluster unreachable; skipped.")
+      );
+    } else if (!dest.authenticated && dest.privileges.length === 0) {
+      // auth-disabled / empty privilege set — the main privileges check already fails this.
+      checks.push(
+        skip("writeBlocking", "Destination can block writes (bypassWriteBlockingMode)", "destination",
+          "Could not verify (no authenticated privileges).")
+      );
+    } else {
+      const { missing, satisfiedByRole } = comparePrivileges(
+        dest.privileges, WRITE_BLOCKING_ACTIONS, dest.roles ?? [], WRITE_BLOCKING_ROLES
+      );
+      if (missing.length === 0) {
+        checks.push({
+          id: "writeBlocking",
+          label: "Destination can block writes (bypassWriteBlockingMode)",
+          side: "destination",
+          status: "pass",
+          detail: satisfiedByRole
+            ? `Granted via built-in role "${satisfiedByRole}".`
+            : "Destination user has setUserWriteBlockMode + bypassWriteBlockingMode.",
+        });
+      } else {
+        checks.push({
+          id: "writeBlocking",
+          label: "Destination can block writes (bypassWriteBlockingMode)",
+          side: "destination",
+          status: "fail",
+          detail: `Destination user is missing ${missing.join(", ")} — mongosync needs these to enable write-blocking at commit and will fatally fail at /start without them.`,
+          remediation:
+            "Grant the destination user a role authorized with setUserWriteBlockMode and bypassWriteBlockingMode. On Atlas: atlasAdmin plus a custom role with those two cluster actions; self-managed: included in root / restore.",
+        });
+      }
     }
   }
 

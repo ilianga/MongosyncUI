@@ -156,6 +156,26 @@ describe("deriveChecks", () => {
     ).toBe("warn");
   });
 
+  it("write-blocking: fails when the destination user lacks bypassWriteBlockingMode (e.g. Atlas atlasAdmin)", () => {
+    const dest = goodFacts({
+      roles: [{ role: "atlasAdmin", db: "admin" }],
+      privileges: [{ resource: { db: "", collection: "" }, actions: ["insert", "find", "enableSharding"] }],
+    });
+    const c = byId(deriveChecks(goodFacts(), dest, {}), "writeBlocking");
+    expect(c.status).toBe("fail");
+    expect(c.detail).toMatch(/bypassWriteBlockingMode/);
+  });
+
+  it("write-blocking: passes when the actions are granted, or via root", () => {
+    const withActions = goodFacts({
+      roles: [{ role: "myRole", db: "admin" }],
+      privileges: [{ resource: { db: "", collection: "" }, actions: ["setUserWriteBlockMode", "bypassWriteBlockingMode"] }],
+    });
+    expect(byId(deriveChecks(goodFacts(), withActions, {}), "writeBlocking").status).toBe("pass");
+    // default goodFacts has role root → satisfied by role
+    expect(byId(deriveChecks(goodFacts(), goodFacts(), {}), "writeBlocking").status).toBe("pass");
+  });
+
   it("leftover sync state on destination warns", () => {
     const checks = deriveChecks(goodFacts(), goodFacts({ hasSyncState: true }), {});
     expect(byId(checks, "leftoverSyncState").status).toBe("warn");
