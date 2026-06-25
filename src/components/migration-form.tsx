@@ -287,9 +287,11 @@ export function MigrationForm() {
           <CollapsibleContent className="space-y-4 pt-4">
             <p className={sectionHelperClass}>Limit sync to specific databases or collections.</p>
             <NamespaceFilterFields control={form.control} register={form.register}
-              name="includeNamespaces" label="Include" />
+              name="includeNamespaces" label="Include"
+              getSourceConn={() => connToConfig(form.getValues().source)} />
             <NamespaceFilterFields control={form.control} register={form.register}
-              name="excludeNamespaces" label="Exclude" />
+              name="excludeNamespaces" label="Exclude"
+              getSourceConn={() => connToConfig(form.getValues().source)} />
           </CollapsibleContent>
         </Collapsible>
       </div>
