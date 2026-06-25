@@ -1,4 +1,5 @@
 export const MONGOSYNC_STATES = [
+  "INITIALIZING",
   "IDLE",
   "RUNNING",
   "PAUSED",

@@ -49,6 +49,10 @@ export function MigrationForm() {
   const [preflight, setPreflight] = useState<PreflightReport | null>(null);
   const [preflightRunning, setPreflightRunning] = useState(false);
   const [warnConfirm, setWarnConfirm] = useState<MigrationFormValues | null>(null);
+  // "Show config" preview: the masked YAML + /start body returned by the preview API.
+  const [preview, setPreview] = useState<{ yaml: string; startBody: Record<string, unknown> } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [copied, setCopied] = useState<"yaml" | "startBody" | null>(null);
   // Single cert-staging token shared by both clusters' uploads, submitted on create so the
   // server moves staged PEMs into the migration's permanent cert dir.
   const tokenRef = useRef(nanoid());
@@ -117,6 +121,44 @@ export function MigrationForm() {
   // Manual "Run preflight" button — just shows the report inline, doesn't submit.
   const onRunPreflight = async () => {
     await runPreflight(form.getValues());
+  };
+
+  // "Show config" — build the YAML + /start body the server would use (passwords masked)
+  // and show them in a dialog. Doesn't create or start anything.
+  const onShowConfig = async () => {
+    const values = form.getValues();
+    setPreviewLoading(true);
+    setError(null);
+    setCopied(null);
+    try {
+      const res = await fetch("/api/migrations/preview-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: values.name,
+          sourceConn: connToConfig(values.source),
+          destConn: connToConfig(values.dest),
+          config: formValuesToConfig(values),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to build config preview");
+      setPreview(data as { yaml: string; startBody: Record<string, unknown> });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const copyToClipboard = async (which: "yaml" | "startBody", text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setTimeout(() => setCopied((c) => (c === which ? null : c)), 1500);
+    } catch {
+      /* clipboard unavailable — ignore */
+    }
   };
 
   // The actual create call, used after preflight passes or the user confirms warnings.
@@ -307,6 +349,14 @@ export function MigrationForm() {
           <Button
             type="button"
             variant="outline"
+            onClick={onShowConfig}
+            disabled={previewLoading || submitting}
+          >
+            {previewLoading ? "Building…" : "Show config"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
             onClick={onRunPreflight}
             disabled={preflightRunning || submitting || (reversible && hasFilters)}
           >
@@ -371,6 +421,49 @@ export function MigrationForm() {
           >
             {submitting ? "Creating..." : "Create anyway"}
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={preview !== null} onOpenChange={(v) => { if (!v) setPreview(null); }}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Generated configuration</DialogTitle>
+          <DialogDescription>
+            The YAML config and <code>/start</code> body that would be used. Passwords are masked
+            and the port is illustrative (auto-assigned on create).
+          </DialogDescription>
+        </DialogHeader>
+        {preview && (
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold">mongosync config (YAML)</p>
+                <Button type="button" variant="outline" size="sm"
+                  onClick={() => copyToClipboard("yaml", preview.yaml)}>
+                  {copied === "yaml" ? "Copied!" : "Copy"}
+                </Button>
+              </div>
+              <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-xs">
+                {preview.yaml}
+              </pre>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold">/start request body (JSON)</p>
+                <Button type="button" variant="outline" size="sm"
+                  onClick={() => copyToClipboard("startBody", JSON.stringify(preview.startBody, null, 2))}>
+                  {copied === "startBody" ? "Copied!" : "Copy"}
+                </Button>
+              </div>
+              <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-xs">
+                {JSON.stringify(preview.startBody, null, 2)}
+              </pre>
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setPreview(null)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

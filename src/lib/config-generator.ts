@@ -8,14 +8,24 @@ function parseConfig(migration: Migration): StartConfig {
   return JSON.parse(migration.config) as StartConfig;
 }
 
-export function generateConfig(migration: Migration): string {
-  const cfg = parseConfig(migration);
-  const logDir = getLogDir(migration.id);
+/**
+ * Build the process-options object that becomes the mongosync YAML config. Pure: no I/O.
+ * Telemetry is ALWAYS disabled (this UI never reports telemetry), regardless of what the
+ * stored config says.
+ */
+function buildConfigObject(args: {
+  cfg: StartConfig;
+  cluster0: string;
+  cluster1: string;
+  port: number;
+  logDir: string;
+}): Record<string, unknown> {
+  const { cfg, cluster0, cluster1, port, logDir } = args;
 
   const out: Record<string, unknown> = {
-    cluster0: migration.sourceUri,
-    cluster1: migration.destUri,
-    port: migration.port,
+    cluster0,
+    cluster1,
+    port,
     logPath: logDir,
     metricsLoggingFilepath: logDir,
   };
@@ -25,17 +35,21 @@ export function generateConfig(migration: Migration): string {
   if (cfg.loadLevel !== undefined) out.loadLevel = cfg.loadLevel;
   if (cfg.createIndexesBatchSize !== undefined) out.createIndexesBatchSize = cfg.createIndexesBatchSize;
   if (cfg.id !== undefined) out.id = cfg.id;
-  if (cfg.disableTelemetry) out.disableTelemetry = true;
+  // Telemetry is always off for this UI.
+  out.disableTelemetry = true;
   if (cfg.disableVerification) out.disableVerification = true;
   if (cfg.enableCappedCollectionHandling) out.enableCappedCollectionHandling = true;
 
-  const configPath = path.join(getConfigDir(), `${migration.id}.yaml`);
-  fs.writeFileSync(configPath, yaml.dump(out), "utf-8");
-  return configPath;
+  return out;
 }
 
-export function buildStartBody(migration: Migration): Record<string, unknown> {
-  const cfg = parseConfig(migration);
+/**
+ * Build the `/start` request body. Pure: no I/O. Verification is ALWAYS disabled here —
+ * mongosync enables the embedded verifier by default, so we explicitly turn it off unless
+ * `cfg.verificationEnabled === true` (which the UI never sets today, so it is effectively
+ * always false).
+ */
+function buildStartBodyFromConfig(cfg: StartConfig): Record<string, unknown> {
   const body: Record<string, unknown> = { source: "cluster0", destination: "cluster1" };
 
   if (cfg.buildIndexes !== undefined) body.buildIndexes = cfg.buildIndexes;
@@ -48,8 +62,65 @@ export function buildStartBody(migration: Migration): Record<string, unknown> {
   if (cfg.excludeNamespaces && cfg.excludeNamespaces.length > 0)
     body.excludeNamespaces = cfg.excludeNamespaces;
   if (cfg.sharding && cfg.sharding.shardingEntries.length > 0) body.sharding = cfg.sharding;
-  if (cfg.verificationEnabled !== undefined)
-    body.verification = { enabled: cfg.verificationEnabled };
+  // Verification is always disabled (only true if explicitly opted in, which never happens).
+  body.verification = { enabled: cfg.verificationEnabled === true };
 
   return body;
+}
+
+export function generateConfig(migration: Migration): string {
+  const cfg = parseConfig(migration);
+  const logDir = getLogDir(migration.id);
+
+  const out = buildConfigObject({
+    cfg,
+    cluster0: migration.sourceUri,
+    cluster1: migration.destUri,
+    port: migration.port,
+    logDir,
+  });
+
+  const configPath = path.join(getConfigDir(), `${migration.id}.yaml`);
+  fs.writeFileSync(configPath, yaml.dump(out), "utf-8");
+  return configPath;
+}
+
+export function buildStartBody(migration: Migration): Record<string, unknown> {
+  return buildStartBodyFromConfig(parseConfig(migration));
+}
+
+export interface ConfigPreviewInput {
+  sourceUri: string;
+  destUri: string;
+  config: StartConfig;
+  /** Illustrative port for the preview (the real port is auto-assigned at create time). */
+  port?: number;
+  /** Illustrative log directory for the preview. */
+  logDir?: string;
+}
+
+export interface ConfigPreview {
+  yaml: string;
+  startBody: Record<string, unknown>;
+}
+
+/**
+ * Build the YAML config + `/start` body the same way create does, WITHOUT writing any
+ * file. Pure and side-effect free, so it can drive a "Show config" preview. Telemetry is
+ * always off and verification is always disabled (see the shared builders above). Port and
+ * log dir are illustrative only.
+ */
+export function buildConfigPreview(input: ConfigPreviewInput): ConfigPreview {
+  const out = buildConfigObject({
+    cfg: input.config,
+    cluster0: input.sourceUri,
+    cluster1: input.destUri,
+    port: input.port ?? 27182,
+    logDir: input.logDir ?? "~/.mongosync-ui/logs/<id>",
+  });
+
+  return {
+    yaml: yaml.dump(out),
+    startBody: buildStartBodyFromConfig(input.config),
+  };
 }

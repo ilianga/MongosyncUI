@@ -37,4 +37,9 @@ export const STATE_STYLE: Record<MongosyncState, StateStyle> = {
     pill: "bg-muted text-muted-foreground",
     pulse: false,
   },
+  INITIALIZING: {
+    dot: "#889397",
+    pill: "bg-muted text-muted-foreground",
+    pulse: true,
+  },
 };

@@ -3,6 +3,7 @@ import type { MongosyncState } from "./types";
 export type ActionKind = "start" | "pause" | "resume" | "commit" | "reverse" | "stop" | "restart" | "delete";
 
 const ACTIONS: Record<MongosyncState, ActionKind[]> = {
+  INITIALIZING: ["delete"],
   IDLE: ["start", "delete"],
   RUNNING: ["pause", "commit", "stop", "delete"],
   PAUSED: ["resume", "stop", "delete"],
@@ -19,6 +20,7 @@ export function availableActions(state: MongosyncState, stopped = false): Action
 }
 
 export const STATE_COLORS: Record<MongosyncState, string> = {
+  INITIALIZING: "bg-gray-100 text-gray-700 border-gray-300",
   IDLE: "bg-gray-100 text-gray-700 border-gray-300",
   RUNNING: "bg-blue-100 text-blue-700 border-blue-300",
   PAUSED: "bg-yellow-100 text-yellow-700 border-yellow-300",
