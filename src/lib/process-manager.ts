@@ -184,14 +184,46 @@ export function killShardedInstances(
  * "(NotAReplicaSet) node needs to be a replica set member to use read concern".
  * Returns the last non-empty line, or null if nothing useful is available.
  */
-export function readStartupFailure(migrationId: string): string | null {
-  try {
-    const text = fs.readFileSync(path.join(getLogDir(migrationId), "stdout.log"), "utf8");
-    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    return lines.length ? lines[lines.length - 1] : null;
-  } catch {
-    return null;
+/**
+ * Extract the most relevant fatal/error message from mongosync's structured log text.
+ * mongosync writes one JSON object per line (`{level, message, error:{message}}`); the
+ * actionable reason for a failed start lives in the last fatal/panic line's nested
+ * `error.message` (e.g. "missing privileges ([bypassWriteBlockingMode]) ..."). Pure.
+ */
+export function extractFatalReason(logText: string): string | null {
+  const lines = logText.split("\n").map((l) => l.trim()).filter(Boolean);
+  let lastFatal: string | null = null;
+  let lastError: string | null = null;
+  for (const line of lines) {
+    if (!line.startsWith("{")) continue;
+    let obj: Record<string, unknown>;
+    try { obj = JSON.parse(line); } catch { continue; }
+    const level = typeof obj.level === "string" ? obj.level : "";
+    const err = obj.error as { message?: string } | undefined;
+    const msg = (err && typeof err.message === "string" ? err.message : undefined)
+      ?? (typeof obj.message === "string" ? obj.message : undefined);
+    if (!msg) continue;
+    if (level === "fatal" || level === "panic") lastFatal = msg;
+    else if (level === "error") lastError = msg;
   }
+  const reason = lastFatal ?? lastError;
+  return reason ? reason.slice(0, 600) : null;
+}
+
+/**
+ * The reason a mongosync instance failed to start, read from its structured log
+ * (`mongosync.log` — the wrapper's `stdout.log` only captures non-mongosync stderr and is
+ * usually empty). Returns the actionable fatal message, or null if none found.
+ */
+export function readStartupFailure(migrationId: string): string | null {
+  const dir = getLogDir(migrationId);
+  for (const file of ["mongosync.log", "stdout.log"]) {
+    try {
+      const reason = extractFatalReason(fs.readFileSync(path.join(dir, file), "utf8"));
+      if (reason) return reason;
+    } catch { /* file absent — try the next */ }
+  }
+  return null;
 }
 
 export async function sendCommand(

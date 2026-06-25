@@ -4,6 +4,25 @@ async function load() {
   return await import("@/lib/process-manager");
 }
 
+describe("extractFatalReason", () => {
+  it("pulls the nested error.message from the last fatal line", async () => {
+    const { extractFatalReason } = await load();
+    const log = [
+      JSON.stringify({ level: "info", message: "starting" }),
+      JSON.stringify({ level: "error", message: "transient", error: { message: "retrying" } }),
+      JSON.stringify({ level: "fatal", message: "Mongosync exited with an error.", error: { message: "missing privileges ([bypassWriteBlockingMode]) ..." } }),
+    ].join("\n");
+    expect(extractFatalReason(log)).toBe("missing privileges ([bypassWriteBlockingMode]) ...");
+  });
+
+  it("falls back to an error-level line when no fatal exists, and returns null for non-JSON/empty", async () => {
+    const { extractFatalReason } = await load();
+    expect(extractFatalReason(JSON.stringify({ level: "error", error: { message: "boom" } }))).toBe("boom");
+    expect(extractFatalReason("plain stderr line\nanother")).toBeNull();
+    expect(extractFatalReason("")).toBeNull();
+  });
+});
+
 describe("process-manager liveness", () => {
   it("isProcessAlive returns false for a non-existent PID", async () => {
     const { isProcessAlive } = await load();

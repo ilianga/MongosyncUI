@@ -237,7 +237,10 @@ export function MigrationForm() {
 
   return (
     <>
-    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6" aria-busy={submitting || preflightRunning}>
+      {/* Options are locked + dimmed while a preflight/create is in flight so it's clear
+          the form has moved into a working state (feedback shown in the sticky bar). */}
+      <div className={cn("space-y-6 transition-opacity", (submitting || preflightRunning) && "pointer-events-none select-none opacity-50")}>
       {/* ── Connection ── */}
       <div className={sectionClass}>
         <p className={sectionHeaderClass}>Connection</p>
@@ -459,6 +462,8 @@ export function MigrationForm() {
         </div>
       )}
 
+      </div>{/* end options (dimmed while busy) */}
+
       {/* ── Sticky Submit Bar ── */}
       <div className="sticky bottom-0 -mx-0 mt-2 border-t border-border bg-background/80 py-3 backdrop-blur">
         {error && (
@@ -473,31 +478,38 @@ export function MigrationForm() {
             </AlertDescription>
           </Alert>
         )}
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onShowConfig}
-            disabled={previewLoading || submitting}
-          >
-            {previewLoading ? "Building…" : "Show config"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onRunPreflight}
-            disabled={preflightRunning || submitting || (reversible && hasFilters)}
-          >
-            {preflightRunning ? "Running…" : "Run preflight"}
-          </Button>
-          <Button
-            type="submit"
-            disabled={submitting || preflightRunning || (reversible && hasFilters)}
-            className="flex-1"
-          >
-            {submitting ? "Creating..." : preflightRunning ? "Checking..." : "Create & Start Migration"}
-          </Button>
-        </div>
+        {submitting || preflightRunning ? (
+          <div className="flex items-center gap-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+            <span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden />
+            <div className="min-w-0">
+              <p className="text-sm font-medium">
+                {submitting ? "Creating & starting migration…" : "Running preflight checks…"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {submitting
+                  ? "Spawning mongosync, connecting to both clusters, and waiting for it to become ready — this can take up to ~30s. Please keep this tab open."
+                  : "Validating connectivity, privileges, replica-set, oplog and sync-state on both clusters…"}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={onShowConfig} disabled={previewLoading}>
+              {previewLoading ? "Building…" : "Show config"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onRunPreflight}
+              disabled={reversible && hasFilters}
+            >
+              Run preflight
+            </Button>
+            <Button type="submit" disabled={reversible && hasFilters} className="flex-1">
+              Create & Start Migration
+            </Button>
+          </div>
+        )}
       </div>
     </form>
 
