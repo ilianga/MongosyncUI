@@ -58,6 +58,19 @@ npm run build
 npm run start        # serves on localhost:3000 (use `-- -p <port>` to change)
 ```
 
+## Documentation
+
+Full guides live in [`docs/`](./docs):
+
+- [Getting started](./docs/getting-started.md) — install, first login, binary path, your first migration.
+- [Connections and authentication](./docs/connections.md) — connection builder, every auth method, TLS / self-signed CA, saved connections.
+- [Migrations](./docs/migrations.md) — lifecycle (states + actions), monitoring, commit/cutover, reverse, stop/resume, supervision.
+- [Preflight checks](./docs/preflight.md) — what each readiness check means and how to remediate.
+- [Namespace filtering](./docs/filtering.md) — include/exclude lists and constraints.
+- [Sharded clusters runbook](./docs/sharded-clusters.md) — single vs. multi-instance, even/uneven shard counts, balancer/zone prerequisites.
+- [Configuration](./docs/configuration.md) — env vars, settings, data-directory layout, health endpoint.
+- [Troubleshooting](./docs/troubleshooting.md) — common errors and fixes.
+
 ## Configuration
 
 Environment variables (all optional for a purely-local dev run — see [`.env.example`](./.env.example)):
