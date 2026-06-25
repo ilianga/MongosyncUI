@@ -14,7 +14,7 @@ import { sameHostSet } from "@/lib/schemas";
 import { commitStagedCerts } from "@/lib/certs";
 import type { StartConfig } from "@/lib/types";
 import { z } from "zod";
-import { handle, jsonOk, jsonError, readJson, ApiError } from "@/lib/api";
+import { handle, jsonOk, jsonError, readJson, ApiError, maskError } from "@/lib/api";
 
 export const GET = handle(async () => {
   initApp();
@@ -237,13 +237,18 @@ export const POST = handle(async (request: Request) => {
     startPoller();
     return jsonOk(getMigration(migration.id), 201);
   } catch (error) {
-    // Spawn/start failed unexpectedly: tear down the half-created migration, then return
-    // an opaque error (the underlying message may embed a connection string).
+    // Spawn/start failed unexpectedly (e.g. mongosync's web server crashed mid-/start on a
+    // privilege error). Read the real fatal from the log BEFORE teardown so the user sees an
+    // actionable reason instead of a generic failure; mask any embedded connection string.
+    const reason = readStartupFailure(migration.id);
     const latest = getMigration(migration.id);
     if (latest) killMongosync(latest);
     deleteMigration(migration.id);
     if (error instanceof ApiError) throw error;
-    return jsonError("Failed to start migration", 500);
+    return jsonError(
+      reason ? `mongosync failed to start: ${reason}` : `Failed to start migration: ${maskError(error)}`,
+      500
+    );
   }
 });
 
@@ -335,6 +340,6 @@ async function startShardedMigration(args: {
     if (latest) killShardedInstances(latest);
     deleteMigration(migration.id);
     if (error instanceof ApiError) throw error;
-    return jsonError("Failed to start sharded migration", 500);
+    return jsonError(`Failed to start sharded migration: ${maskError(error)}`, 500);
   }
 }
