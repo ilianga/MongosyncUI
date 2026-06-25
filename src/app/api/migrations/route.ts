@@ -201,17 +201,23 @@ export const POST = handle(async (request: Request) => {
       if (latest) killMongosync(latest);
       deleteMigration(migration.id);
 
-      // A common cause of "never reaches IDLE" is leftover sync state on the destination
-      // from a prior aborted run: mongosync auto-resumes it instead of starting fresh.
-      // Surface a distinct code so the UI can offer to drop it and retry, rather than
-      // showing a generic timeout. Detection is best-effort (needs mongosh).
+      // A common cause of "never reaches IDLE" is leftover __mdb_internal_mongosync state
+      // from a prior run — on EITHER cluster. mongosync refuses to start a fresh sync when
+      // it finds state whose recorded source/destination cluster ids don't match the current
+      // pair (e.g. a host that was previously a destination and is now the source). Check
+      // both sides and surface which, so the UI can offer to drop and retry. Best-effort.
       if (!reason && !crashed) {
         try {
-          if (await hasSyncState(destUri)) {
+          const [srcHas, dstHas] = await Promise.all([
+            hasSyncState(sourceUri).catch(() => false),
+            hasSyncState(destUri).catch(() => false),
+          ]);
+          if (srcHas || dstHas) {
+            const which = [srcHas ? "source" : null, dstHas ? "destination" : null].filter(Boolean).join(" and ");
             return jsonError(
-              "The destination already has mongosync sync state (__mdb_internal_mongosync) from a previous run.",
+              `Leftover mongosync state (__mdb_internal_mongosync) on the ${which} from a previous run — mongosync can't start a fresh sync until it's dropped.`,
               409,
-              { code: "DEST_HAS_SYNC_STATE" }
+              { code: "HAS_SYNC_STATE", sides: { source: srcHas, destination: dstHas } }
             );
           }
         } catch { /* mongosh unavailable — fall through to the generic error */ }

@@ -41,9 +41,10 @@ export function MigrationForm() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // When the destination has leftover mongosync state, we hold the submitted values
-  // and prompt the user to drop it and retry instead of failing with a raw timeout.
+  // When EITHER cluster has leftover mongosync state, we hold the submitted values + which
+  // side(s) are affected, and prompt the user to drop it and retry instead of a raw timeout.
   const [staleState, setStaleState] = useState<MigrationFormValues | null>(null);
+  const [staleSides, setStaleSides] = useState<{ source: boolean; destination: boolean }>({ source: false, destination: false });
   const [dropping, setDropping] = useState(false);
   // Preflight: the last report (shown inline) and, when it's warn-only, the values we
   // hold so the user can confirm "Create anyway". A `fail` report blocks submission.
@@ -94,7 +95,12 @@ export function MigrationForm() {
       }),
     });
     const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, code: data?.code as string | undefined, error: data?.error as string | undefined };
+    return {
+      ok: res.ok,
+      code: data?.code as string | undefined,
+      error: data?.error as string | undefined,
+      sides: data?.sides as { source: boolean; destination: boolean } | undefined,
+    };
   };
 
   // Run the preflight readiness check for the current form values.
@@ -173,7 +179,11 @@ export function MigrationForm() {
     try {
       const r = await postCreate(values);
       if (r.ok) { router.push("/"); return; }
-      if (r.code === "DEST_HAS_SYNC_STATE") { setStaleState(values); return; }
+      if (r.code === "HAS_SYNC_STATE") {
+        setStaleSides(r.sides ?? { source: false, destination: true });
+        setStaleState(values);
+        return;
+      }
       setError(r.error || "Failed to create migration");
     } catch (err) {
       setError((err as Error).message);
@@ -192,19 +202,24 @@ export function MigrationForm() {
     await doCreate(values);
   };
 
-  // User confirmed dropping leftover sync state on the destination — drop it, then retry.
+  // User confirmed dropping leftover sync state — drop it on each affected side, then retry.
   const confirmDropAndRetry = async () => {
     if (!staleState) return;
     setDropping(true);
     setError(null);
     try {
-      const drop = await fetch("/api/cluster-check/drop-sync-state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri: buildConnectionString(connToConfig(staleState.dest)) }),
-      });
-      const dropData = await drop.json().catch(() => ({}));
-      if (!drop.ok) throw new Error(dropData?.error || "Failed to drop sync state");
+      const targets: string[] = [];
+      if (staleSides.source) targets.push(buildConnectionString(connToConfig(staleState.source)));
+      if (staleSides.destination) targets.push(buildConnectionString(connToConfig(staleState.dest)));
+      for (const uri of targets) {
+        const drop = await fetch("/api/cluster-check/drop-sync-state", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uri }),
+        });
+        const dropData = await drop.json().catch(() => ({}));
+        if (!drop.ok) throw new Error(dropData?.error || "Failed to drop sync state");
+      }
 
       setSubmitting(true);
       const r = await postCreate(staleState);
@@ -489,16 +504,19 @@ export function MigrationForm() {
     <Dialog open={staleState !== null} onOpenChange={(v) => { if (!v && !dropping) setStaleState(null); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Leftover sync state on destination</DialogTitle>
+          <DialogTitle>
+            Leftover sync state on the {[staleSides.source && "source", staleSides.destination && "destination"].filter(Boolean).join(" and ") || "cluster"}
+          </DialogTitle>
           <DialogDescription>
-            The destination already has mongosync state (<code>__mdb_internal_mongosync</code>) from a
-            previous run. mongosync will try to resume that old sync instead of starting fresh, so the
-            migration never becomes ready.
+            The {[staleSides.source && "source", staleSides.destination && "destination"].filter(Boolean).join(" and ") || "cluster"} still
+            has mongosync state (<code>__mdb_internal_mongosync</code>) from a previous run — often a host
+            that was a destination before and is now the source. mongosync won&apos;t start a fresh sync
+            until it&apos;s dropped.
           </DialogDescription>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          Drop that state database on the destination and start a fresh migration? This is mongosync&apos;s
-          own bookkeeping — it does not delete your data.
+          Drop that state database and start a fresh migration? This is mongosync&apos;s own bookkeeping —
+          it does not delete your data.
         </p>
         <DialogFooter>
           <Button variant="outline" onClick={() => setStaleState(null)} disabled={dropping}>

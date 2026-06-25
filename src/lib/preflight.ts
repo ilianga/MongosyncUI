@@ -501,6 +501,37 @@ export function deriveChecks(
     });
   }
 
+  // 7b. leftoverSyncState on the SOURCE — a host that was a destination in a prior run keeps
+  // its __mdb_internal_mongosync DB; mongosync then refuses to start (source cluster-id
+  // mismatch). This is the source-side counterpart to the destination check above.
+  if (!source.reachable || source.hasSyncState === undefined) {
+    checks.push(
+      skip(
+        "leftoverSyncState.source",
+        "No leftover mongosync state on source",
+        "source",
+        source.reachable ? source.error || "Could not check for sync state." : "Cluster unreachable; skipped."
+      )
+    );
+  } else if (source.hasSyncState) {
+    checks.push({
+      id: "leftoverSyncState.source",
+      label: "No leftover mongosync state on source",
+      side: "source",
+      status: "warn",
+      detail: `${MONGOSYNC_STATE_DB} is present on the source (likely from a prior run where it was the destination) — mongosync will refuse to start with a source cluster-id mismatch.`,
+      remediation: 'Drop the leftover state on the source (the "Drop sync state" action / POST /api/cluster-check/drop-sync-state).',
+    });
+  } else {
+    checks.push({
+      id: "leftoverSyncState.source",
+      label: "No leftover mongosync state on source",
+      side: "source",
+      status: "pass",
+      detail: "No leftover sync state found.",
+    });
+  }
+
   // 8. oplogWindow (source)
   if (!source.reachable) {
     checks.push(skip("oplogWindow", "Source oplog window is healthy", "source", "Cluster unreachable; skipped."));

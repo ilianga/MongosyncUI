@@ -161,6 +161,12 @@ describe("deriveChecks", () => {
     expect(byId(checks, "leftoverSyncState").status).toBe("warn");
   });
 
+  it("leftover sync state on the SOURCE warns (host that was a prior destination)", () => {
+    const checks = deriveChecks(goodFacts({ hasSyncState: true }), goodFacts(), {});
+    expect(byId(checks, "leftoverSyncState.source").status).toBe("warn");
+    expect(byId(checks, "leftoverSyncState").status).toBe("pass"); // dest is clean
+  });
+
   it("differing majors warn for one-way, fail when reversible", () => {
     const source = goodFacts({ version: "6.0.1" });
     const dest = goodFacts({ version: "7.0.5" });
