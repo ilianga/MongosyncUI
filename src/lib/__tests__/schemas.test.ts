@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { migrationFormSchema, formValuesToConfig, connToConfig } from "@/lib/schemas";
+import { migrationFormSchema, formValuesToConfig, connToConfig, connectionHostSet, sameHostSet } from "@/lib/schemas";
 
 const base = {
   name: "m",
@@ -175,5 +175,48 @@ describe("formValuesToConfig — shard-key parsing", () => {
     const cfg = withShard("ts:-1");
     const key = cfg.sharding!.shardingEntries[0].shardCollection.key;
     expect(key).toEqual([{ ts: -1 }]);
+  });
+});
+
+describe("connectionHostSet", () => {
+  it("strips scheme, userinfo, path and query and defaults the port", () => {
+    expect([...connectionHostSet("mongodb://user:pass@Host1.example:27017/db?x=1")]).toEqual([
+      "host1.example:27017",
+    ]);
+    expect([...connectionHostSet("mongodb://h")]).toEqual(["h:27017"]);
+  });
+
+  it("collects every host in a multi-host string", () => {
+    const set = connectionHostSet("mongodb://a:27017,b:27018/admin");
+    expect(set).toEqual(new Set(["a:27017", "b:27018"]));
+  });
+
+  it("handles +srv and empty host parts", () => {
+    expect([...connectionHostSet("mongodb+srv://u@cluster.mongodb.net/")]).toEqual([
+      "cluster.mongodb.net:27017",
+    ]);
+    expect(connectionHostSet("mongodb://").size).toBe(0);
+  });
+});
+
+describe("sameHostSet", () => {
+  it("treats default-port and explicit-port forms as equal", () => {
+    expect(sameHostSet("mongodb://h", "mongodb://h:27017")).toBe(true);
+  });
+
+  it("ignores credentials, scheme, and order when comparing", () => {
+    expect(
+      sameHostSet("mongodb://u:p@a:27017,b:27018", "mongodb://b:27018,a:27017/db?w=1")
+    ).toBe(true);
+  });
+
+  it("is false for different hosts", () => {
+    expect(sameHostSet("mongodb://a:27017", "mongodb://b:27017")).toBe(false);
+    expect(sameHostSet("mongodb://a:27017", "mongodb://a:27017,b:27017")).toBe(false);
+  });
+
+  it("never matches when either side has no parseable host", () => {
+    expect(sameHostSet("mongodb://", "mongodb://")).toBe(false);
+    expect(sameHostSet("", "mongodb://a")).toBe(false);
   });
 });

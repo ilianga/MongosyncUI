@@ -1,6 +1,41 @@
 import { z } from "zod";
 import type { NamespaceFilter, StartConfig, ConnectionConfig } from "./types";
 
+/**
+ * Extract the normalised host set from a MongoDB connection string. Strips the scheme,
+ * any userinfo, the path/query, lowercases, and defaults the port to 27017 so that e.g.
+ * "mongodb://h" and "mongodb://h:27017" compare equal. Returns an empty set for input
+ * with no host part. Pure (no node imports) so it is safe to use in shared/zod code and
+ * easy to unit-test.
+ */
+export function connectionHostSet(uri: string): Set<string> {
+  const withoutScheme = uri.replace(/^mongodb(\+srv)?:\/\//i, "");
+  const afterAuth = withoutScheme.includes("@")
+    ? withoutScheme.slice(withoutScheme.indexOf("@") + 1)
+    : withoutScheme;
+  const hostPart = afterAuth.split("/")[0].split("?")[0];
+  const hosts = hostPart
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean)
+    .map((h) => (h.includes(":") ? h : `${h}:27017`));
+  return new Set(hosts);
+}
+
+/**
+ * True when two connection strings resolve to the same set of hosts — used to reject a
+ * migration whose source and destination point at the same cluster. Conservative: an
+ * empty/unparseable host set never matches (so we don't block on garbage input here).
+ */
+export function sameHostSet(uriA: string, uriB: string): boolean {
+  const a = connectionHostSet(uriA);
+  const b = connectionHostSet(uriB);
+  if (a.size === 0 || b.size === 0) return false;
+  if (a.size !== b.size) return false;
+  for (const h of a) if (!b.has(h)) return false;
+  return true;
+}
+
 export const namespaceRowSchema = z.object({
   database: z.string().default(""),
   databaseRegex: z.string().default(""),

@@ -57,11 +57,22 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
     <Card className="group gap-0 p-5 transition-all hover:ring-primary/40 hover:shadow-sm">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
-        <Link href={`/migrations/${migration.id}`} className="min-w-0">
-          <h3 className="truncate text-lg font-semibold leading-tight decoration-primary/40 underline-offset-4 group-hover:underline">
-            {migration.name}
-          </h3>
-        </Link>
+        <div className="min-w-0">
+          <Link href={`/migrations/${migration.id}`} className="min-w-0">
+            <h3 className="truncate text-lg font-semibold leading-tight decoration-primary/40 underline-offset-4 group-hover:underline">
+              {migration.name}
+            </h3>
+          </Link>
+          {migration.groupName && (
+            <span
+              className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+              title={`Group: ${migration.groupName}`}
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden />
+              <span className="truncate">{migration.groupName}</span>
+            </span>
+          )}
+        </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <SupervisionBadge status={migration.supervisionStatus} />
           {isStopped ? (

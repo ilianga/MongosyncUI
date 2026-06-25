@@ -37,6 +37,41 @@ function SkeletonCard() {
   );
 }
 
+const ACTIVE_STATES = new Set(["RUNNING", "COMMITTING", "REVERSING"]);
+
+// Split migrations into named multi-destination groups (preserving first-seen order) and
+// the remaining ungrouped ones, which render exactly as before.
+function partitionByGroup(migrations: Migration[]): {
+  groups: { name: string; items: Migration[] }[];
+  ungrouped: Migration[];
+} {
+  const groups: { name: string; items: Migration[] }[] = [];
+  const index = new Map<string, { name: string; items: Migration[] }>();
+  const ungrouped: Migration[] = [];
+  for (const m of migrations) {
+    const name = m.groupName?.trim();
+    if (!name) {
+      ungrouped.push(m);
+      continue;
+    }
+    let g = index.get(name);
+    if (!g) {
+      g = { name, items: [] };
+      index.set(name, g);
+      groups.push(g);
+    }
+    g.items.push(m);
+  }
+  return { groups, ungrouped };
+}
+
+// Compact "N destinations · K running" summary for a group header.
+function groupSummary(items: Migration[]): string {
+  const running = items.filter((m) => !m.stopped && ACTIVE_STATES.has(m.state)).length;
+  const dests = items.length;
+  return `${dests} destination${dests === 1 ? "" : "s"} · ${running} running`;
+}
+
 const LeafIcon = (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -118,11 +153,35 @@ export default function DashboardPage() {
             }
           />
         ) : (
-          <div className="grid animate-fade-in gap-5 lg:grid-cols-2">
-            {migrations.map((m) => (
-              <MigrationCard key={m.id} migration={m} onAction={refreshNow} />
-            ))}
-          </div>
+          (() => {
+            const { groups, ungrouped } = partitionByGroup(migrations);
+            return (
+              <div className="animate-fade-in space-y-8">
+                {groups.map((g) => (
+                  <section key={g.name} className="space-y-3">
+                    <div className="flex items-baseline gap-2">
+                      <h2 className="text-sm font-semibold text-foreground">{g.name}</h2>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {groupSummary(g.items)}
+                      </span>
+                    </div>
+                    <div className="grid gap-5 rounded-xl border border-border/60 bg-muted/20 p-4 lg:grid-cols-2">
+                      {g.items.map((m) => (
+                        <MigrationCard key={m.id} migration={m} onAction={refreshNow} />
+                      ))}
+                    </div>
+                  </section>
+                ))}
+                {ungrouped.length > 0 && (
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    {ungrouped.map((m) => (
+                      <MigrationCard key={m.id} migration={m} onAction={refreshNow} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()
         )}
       </div>
     </>

@@ -109,6 +109,9 @@ function migrateSchema(database: Database.Database): void {
   add("plannedTotalBytes", "plannedTotalBytes INTEGER");
   add("sourceConn", "sourceConn TEXT");
   add("destConn", "destConn TEXT");
+  // Multi-destination groups: nullable label that ties N independent migrations
+  // (one source → N destinations) together for grouped display on the dashboard.
+  add("groupName", "groupName TEXT");
 
   // metrics table: additive columns added after the original schema.
   const metricCols = new Set(
@@ -137,6 +140,7 @@ export function createMigration(input: CreateMigrationInput): Migration {
     destUri: input.destUri,
     sourceConn: input.sourceConn ?? null,
     destConn: input.destConn ?? null,
+    groupName: input.groupName ?? null,
     config: JSON.stringify(input.config),
     state: "IDLE",
     port: input.port,
@@ -153,9 +157,9 @@ export function createMigration(input: CreateMigrationInput): Migration {
   };
   getDb()
     .prepare(
-      `INSERT INTO migrations (id, name, sourceUri, destUri, sourceConn, destConn, config, state, port, pid,
+      `INSERT INTO migrations (id, name, sourceUri, destUri, sourceConn, destConn, groupName, config, state, port, pid,
          desiredRunning, supervisionStatus, restartCount, lastExitCode, lastRestartAt, stopped, plannedTotalBytes, createdAt, updatedAt)
-       VALUES (@id, @name, @sourceUri, @destUri, @sourceConn, @destConn, @config, @state, @port, @pid,
+       VALUES (@id, @name, @sourceUri, @destUri, @sourceConn, @destConn, @groupName, @config, @state, @port, @pid,
          @desiredRunning, @supervisionStatus, @restartCount, @lastExitCode, @lastRestartAt, @stopped, @plannedTotalBytes, @createdAt, @updatedAt)`
     )
     .run(migration);
