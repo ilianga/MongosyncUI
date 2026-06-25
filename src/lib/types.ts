@@ -109,6 +109,14 @@ export interface Migration {
   destConn?: string | null;
   /** Optional label tying this migration to a multi-destination group (one source → N destinations). Null when ungrouped. */
   groupName?: string | null;
+  /**
+   * 1 when this migration's SOURCE is a sharded cluster and is therefore run as N
+   * mongosync instances (one per source shard, `--id <shardId>`), 0 for the normal
+   * single-instance path. SQLite has no bool. Defaults to 0 (single-instance).
+   */
+  sharded: number;
+  /** Number of source shards / mongosync instances for a sharded migration (1 for single-instance). */
+  instanceCount: number;
   config: string; // JSON of StartConfig
   state: MongosyncState;
   port: number;
@@ -170,8 +178,43 @@ export interface CreateMigrationInput {
   destConn?: string | null;
   /** Optional multi-destination group label. Null/undefined for a standalone migration. */
   groupName?: string | null;
+  /** 1 when the source is sharded (multi-instance). Defaults to 0 (single-instance). */
+  sharded?: number;
+  /** Number of mongosync instances (source shards). Defaults to 1 (single-instance). */
+  instanceCount?: number;
   config: StartConfig;
   port: number;
+}
+
+/**
+ * One mongosync instance of a sharded migration. A sharded migration has N of these
+ * (one per source shard); a single-instance migration has none (the migration row
+ * itself carries the single port/session). Stored in the `instances` table.
+ */
+export interface Instance {
+  id: string;
+  migrationId: string;
+  /** Source shard `_id`, passed to mongosync as `--id <shardId>`. */
+  shardId: string;
+  /** HTTP API port for this instance's mongosync process (unique per instance). */
+  port: number;
+  createdAt: number;
+}
+
+/** Per-instance live progress snapshot for the detail-page per-shard breakdown. */
+export interface InstanceProgress {
+  shardId: string;
+  port: number;
+  /** mongosync state, or null when the instance is unreachable. */
+  state: MongosyncState | null;
+  canCommit: boolean;
+  copyProgress: number; // 0-100
+  estimatedCopiedBytes: number;
+  estimatedTotalBytes: number;
+  lagTimeSeconds: number | null;
+  totalEventsApplied: number;
+  /** True when the instance's /progress could not be fetched this request. */
+  reachable: boolean;
 }
 
 // One polled snapshot. Wide enough to drive every chart and stat in the detail page.

@@ -1,9 +1,11 @@
-import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration, getSetting, getLatestMetric, getRecentMetrics } from "@/lib/db";
+import { getAllMigrations, createMigration, getMigration, updateMigration, deleteMigration, getSetting, getLatestMetric, getRecentMetrics, createInstances } from "@/lib/db";
 import { computeMigrationProgress, toProgressGlimpse } from "@/lib/progress";
-import { spawnMongosync, sendCommand, killMongosync, readStartupFailure, type ProgressResponse } from "@/lib/process-manager";
+import { spawnMongosync, sendCommand, killMongosync, spawnShardedInstances, killShardedInstances, readStartupFailure, type ProgressResponse } from "@/lib/process-manager";
 import { buildStartBody } from "@/lib/config-generator";
 import { startPoller } from "@/lib/poller";
-import { readWrapperStatus } from "@/lib/supervisor";
+import { readWrapperStatus, readInstanceWrapperStatus } from "@/lib/supervisor";
+import { broadcastCommand } from "@/lib/sharded-lifecycle";
+import { listSourceShards, listShards, assignInstancePorts } from "@/lib/sharding";
 import { initApp } from "@/lib/init";
 import { hasSyncState } from "@/lib/cluster-check";
 import { computeSourceTotalBytes } from "@/lib/source-stats";
@@ -153,6 +155,23 @@ export const POST = handle(async (request: Request) => {
   // (~30s) startup wait, so it costs no extra latency. Best-effort: null on failure.
   const plannedTotalPromise = computeSourceTotalBytes(sourceUri, merged).catch(() => null);
 
+  // ── Sharded detection: if the SOURCE is a sharded cluster, this migration runs one
+  // mongosync instance per source shard (multi-instance branch). A replica-set source
+  // (listSourceShards → null) falls through to the existing single-instance path below,
+  // 100% unchanged.
+  const shardIds = await listSourceShards(sourceUri).catch(() => null);
+  if (shardIds && shardIds.length > 0) {
+    return startShardedMigration({
+      migration,
+      shardIds,
+      basePort,
+      sourceUri,
+      destUri,
+      merged,
+      plannedTotalPromise,
+    });
+  }
+
   try {
     spawnMongosync(migration);
 
@@ -221,3 +240,95 @@ export const POST = handle(async (request: Request) => {
     return jsonError("Failed to start migration", 500);
   }
 });
+
+// ── Sharded migration startup ──
+// Set up + launch N mongosync instances (one per source shard), broadcast /start to all,
+// and mark the migration RUNNING. Mirrors the single-instance flow but per-instance: each
+// instance must reach IDLE before /start, and /start is broadcast identically to all.
+async function startShardedMigration(args: {
+  migration: import("@/lib/types").Migration;
+  shardIds: string[];
+  basePort: number;
+  sourceUri: string;
+  destUri: string;
+  merged: StartConfig;
+  plannedTotalPromise: Promise<number | null>;
+}) {
+  const { migration, shardIds, basePort, sourceUri, destUri, merged, plannedTotalPromise } = args;
+
+  // reversible requires source & destination to have the SAME shard count. Probe the dest
+  // mongos; if its shard count differs (or can't be determined), force reversible off so a
+  // later /reverse can't be attempted on an incompatible topology.
+  let cfg = merged;
+  if (cfg.reversible) {
+    const destShards = await listShards(destUri).catch(() => null);
+    if (!destShards || destShards.length !== shardIds.length) {
+      cfg = { ...cfg, reversible: false };
+      updateMigration(migration.id, { config: JSON.stringify(cfg) });
+      migration.config = JSON.stringify(cfg);
+    }
+  }
+
+  // Assign a unique port per instance, avoiding the migration's own port and any in use.
+  const used = new Set(getAllMigrations().map((m) => m.port));
+  used.add(migration.port);
+  const specs = assignInstancePorts(shardIds, basePort, used);
+  createInstances(migration.id, specs);
+  updateMigration(migration.id, { sharded: 1, instanceCount: specs.length });
+  migration.sharded = 1;
+  migration.instanceCount = specs.length;
+
+  try {
+    spawnShardedInstances(migration);
+
+    // Wait for EVERY instance to reach IDLE (ready for /start). Per-instance crash-loop
+    // detection bails early. Same 30s budget as the single-instance path.
+    const pending = new Set(specs.map((s) => s.shardId));
+    let crashed = false;
+    for (let i = 0; i < 60 && pending.size > 0; i++) {
+      for (const shardId of pending) {
+        if (readInstanceWrapperStatus(migration.id, shardId)?.state === "crash_looping") {
+          crashed = true;
+          break;
+        }
+      }
+      if (crashed) break;
+      await Promise.all(
+        specs
+          .filter((s) => pending.has(s.shardId))
+          .map(async (s) => {
+            try {
+              const res = await fetch(`http://localhost:${s.port}/api/v1/progress`);
+              if (res.ok) {
+                const body = (await res.json().catch(() => ({}))) as ProgressResponse;
+                if (body.progress?.state === "IDLE") pending.delete(s.shardId);
+              }
+            } catch { /* not ready */ }
+          })
+      );
+      if (pending.size > 0) await new Promise((r) => setTimeout(r, 500));
+    }
+
+    if (pending.size > 0) {
+      const latest = getMigration(migration.id);
+      if (latest) killShardedInstances(latest);
+      deleteMigration(migration.id);
+      const detail = crashed
+        ? "a mongosync instance crash-looped on startup (see logs)"
+        : `${pending.size} of ${specs.length} mongosync instances did not reach IDLE within 30s`;
+      return jsonError(detail, 500);
+    }
+
+    const plannedTotalBytes = await plannedTotalPromise;
+    await broadcastCommand(migration, "start");
+    updateMigration(migration.id, { state: "RUNNING", ...(plannedTotalBytes ? { plannedTotalBytes } : {}) });
+    startPoller();
+    return jsonOk(getMigration(migration.id), 201);
+  } catch (error) {
+    const latest = getMigration(migration.id);
+    if (latest) killShardedInstances(latest);
+    deleteMigration(migration.id);
+    if (error instanceof ApiError) throw error;
+    return jsonError("Failed to start sharded migration", 500);
+  }
+}

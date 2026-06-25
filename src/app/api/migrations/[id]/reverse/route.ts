@@ -1,5 +1,6 @@
 import { getMigration, updateMigration } from "@/lib/db";
 import { sendCommand } from "@/lib/process-manager";
+import { broadcastCommand } from "@/lib/sharded-lifecycle";
 import type { StartConfig } from "@/lib/types";
 import { handle, jsonOk, ApiError } from "@/lib/api";
 
@@ -18,7 +19,13 @@ export const POST = handle(async (_req: Request, { params }: Ctx) => {
     throw new ApiError("This migration was not started with reversible: true.", 409);
   }
 
-  await sendCommand(migration.port, "reverse");
+  if (migration.sharded) {
+    // reversible was already gated at create time to require matching source/dest shard
+    // counts; broadcast /reverse to every instance.
+    await broadcastCommand(migration, "reverse");
+  } else {
+    await sendCommand(migration.port, "reverse");
+  }
   updateMigration(id, { state: "REVERSING" });
   return jsonOk({ ok: true });
 });

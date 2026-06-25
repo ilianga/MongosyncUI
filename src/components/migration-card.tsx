@@ -72,6 +72,15 @@ export function MigrationCard({ migration, onAction }: { migration: Migration; o
               <span className="truncate">{migration.groupName}</span>
             </span>
           )}
+          {!!migration.sharded && (
+            <span
+              className="mt-1 ml-1 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400"
+              title={`Sharded source: ${migration.instanceCount} mongosync instances (one per shard)`}
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
+              <span>sharded · {migration.instanceCount} shard{migration.instanceCount === 1 ? "" : "s"}</span>
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <SupervisionBadge status={migration.supervisionStatus} />

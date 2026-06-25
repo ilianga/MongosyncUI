@@ -1,8 +1,8 @@
 import fs from "fs";
 import path from "path";
 import * as yaml from "js-yaml";
-import { getConfigDir, getLogDir } from "./paths";
-import type { Migration, StartConfig } from "./types";
+import { getConfigDir, getLogDir, getInstanceLogDir } from "./paths";
+import type { Migration, StartConfig, Instance } from "./types";
 
 function parseConfig(migration: Migration): StartConfig {
   return JSON.parse(migration.config) as StartConfig;
@@ -87,6 +87,40 @@ export function generateConfig(migration: Migration): string {
 
 export function buildStartBody(migration: Migration): Record<string, unknown> {
   return buildStartBodyFromConfig(parseConfig(migration));
+}
+
+// ── Sharded multi-instance config generation ──
+// One YAML config per instance: shared cluster0 (source mongos) / cluster1 (dest mongos),
+// a unique port, `id: <shardId>`, and a per-instance log dir. The /start body is identical
+// across all instances (broadcast), so it reuses the migration's buildStartBody unchanged.
+
+function instanceConfigPath(migrationId: string, shardId: string): string {
+  const safe = shardId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return path.join(getConfigDir(), `${migrationId}-${safe}.yaml`);
+}
+
+/**
+ * Write the YAML config for ONE instance of a sharded migration and return its path.
+ * cluster0/cluster1 are the shared source/dest mongos URIs; `id` is the source shard id;
+ * `port` and the log dir are per-instance.
+ */
+export function generateInstanceConfig(migration: Migration, instance: Instance): string {
+  const cfg = parseConfig(migration);
+  const logDir = getInstanceLogDir(migration.id, instance.shardId);
+
+  const out = buildConfigObject({
+    // Force the instance's shard id; the migration-level cfg.id (if any) does not apply
+    // per-instance — each instance must carry its own source shard id.
+    cfg: { ...cfg, id: instance.shardId },
+    cluster0: migration.sourceUri,
+    cluster1: migration.destUri,
+    port: instance.port,
+    logDir,
+  });
+
+  const configPath = instanceConfigPath(migration.id, instance.shardId);
+  fs.writeFileSync(configPath, yaml.dump(out), "utf-8");
+  return configPath;
 }
 
 export interface ConfigPreviewInput {

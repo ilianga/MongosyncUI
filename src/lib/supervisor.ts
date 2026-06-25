@@ -1,12 +1,19 @@
 import path from "path";
 import fs from "fs";
-import { getAllMigrations, getMigration, updateMigration } from "./db";
-import { generateConfig } from "./config-generator";
+import { getAllMigrations, getMigration, getInstances, updateMigration } from "./db";
+import { generateConfig, generateInstanceConfig } from "./config-generator";
 import { resolveMongosyncBin } from "./resolve-bin";
-import { getLogDir, getDataDir } from "./paths";
+import { getLogDir, getInstanceLogDir, getDataDir } from "./paths";
 import { getSupervisionConfig } from "./supervision-config";
-import { sessionName, sessionExists, startSession, killSession, listMsyncSessions } from "./tmux";
-import type { Migration, WrapperStatus } from "./types";
+import {
+  sessionName,
+  instanceSessionName,
+  sessionExists,
+  startSession,
+  killSession,
+  listMsyncSessions,
+} from "./tmux";
+import type { Migration, Instance, WrapperStatus } from "./types";
 
 const WRAPPER = path.resolve(process.cwd(), "scripts/mongosync-respawn.sh");
 
@@ -60,6 +67,155 @@ export function readWrapperStatus(id: string): WrapperStatus | null {
   }
 }
 
+// ── Sharded multi-instance supervision ──
+// Mirrors the single-instance primitives above but keyed on a (migrationId, shardId) pair.
+// Each instance gets its own supervision dir (supervision/<migrationId>/<shardId>/), tmux
+// session (msync-<migrationId>-<shardId>), config and log dir. The single-instance path
+// above is left completely untouched.
+
+function instanceSupervisionDir(migrationId: string, shardId: string): string {
+  const safe = shardId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return path.join(getDataDir(), "supervision", migrationId, safe);
+}
+
+function ensureInstanceSupervisionDir(migrationId: string, shardId: string): void {
+  const dir = instanceSupervisionDir(migrationId, shardId);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    throw new Error(`Could not create supervision directory ${dir}: ${(e as Error).message}`);
+  }
+}
+
+export function instanceStatusPath(migrationId: string, shardId: string): string {
+  return path.join(instanceSupervisionDir(migrationId, shardId), "status.json");
+}
+
+export function instanceStopSentinelPath(migrationId: string, shardId: string): string {
+  return path.join(instanceSupervisionDir(migrationId, shardId), "stop");
+}
+
+export function readInstanceWrapperStatus(migrationId: string, shardId: string): WrapperStatus | null {
+  try {
+    const raw = fs.readFileSync(instanceStatusPath(migrationId, shardId), "utf-8").trim();
+    if (!raw) return null;
+    return JSON.parse(raw.split("\n").pop()!) as WrapperStatus;
+  } catch {
+    return null;
+  }
+}
+
+function buildInstanceWrapperCommand(migration: Migration, instance: Instance): string {
+  const bin = resolveMongosyncBin();
+  const config = generateInstanceConfig(migration, instance);
+  const logDir = getInstanceLogDir(migration.id, instance.shardId);
+  const cfg = getSupervisionConfig();
+  return [
+    q(WRAPPER), q(bin), q(config), q(logDir),
+    q(instanceStatusPath(migration.id, instance.shardId)),
+    q(instanceStopSentinelPath(migration.id, instance.shardId)),
+    cfg.backoffCapSec, cfg.crashLoopMax, cfg.crashLoopWindowSec,
+  ].join(" ");
+}
+
+/**
+ * Start (or re-adopt) the tmux session for ONE instance of a sharded migration. Idempotent:
+ * if the session already exists it is left running. Clears any stale stop sentinel first.
+ */
+export function superviseStartInstance(migration: Migration, instance: Instance): void {
+  const name = instanceSessionName(migration.id, instance.shardId);
+  ensureInstanceSupervisionDir(migration.id, instance.shardId);
+  fs.rmSync(instanceStopSentinelPath(migration.id, instance.shardId), { force: true });
+  if (!sessionExists(name)) startSession(name, buildInstanceWrapperCommand(migration, instance));
+}
+
+/** Start every instance of a sharded migration, then mark the migration running. */
+export function superviseStartSharded(migration: Migration): void {
+  const instances = getInstances(migration.id);
+  for (const inst of instances) superviseStartInstance(migration, inst);
+  updateMigration(migration.id, { desiredRunning: 1, supervisionStatus: "running" });
+}
+
+/** Stop ONE instance's session (intentional: write sentinel; otherwise force-kill for restart). */
+export function superviseStopInstance(
+  migrationId: string,
+  shardId: string,
+  opts: { intentional?: boolean } = {}
+): void {
+  const name = instanceSessionName(migrationId, shardId);
+  if (opts.intentional !== false) {
+    try {
+      ensureInstanceSupervisionDir(migrationId, shardId);
+      fs.writeFileSync(instanceStopSentinelPath(migrationId, shardId), "");
+    } catch {
+      /* sentinel best-effort; kill below still stops it and desiredRunning=0 gates restart */
+    }
+  }
+  killSession(name);
+}
+
+/** Stop every instance of a sharded migration and mark it stopped. */
+export function superviseStopSharded(migrationId: string, opts: { intentional?: boolean } = {}): void {
+  if (opts.intentional !== false) updateMigration(migrationId, { desiredRunning: 0 });
+  for (const inst of getInstances(migrationId)) {
+    superviseStopInstance(migrationId, inst.shardId, opts);
+  }
+  updateMigration(migrationId, { supervisionStatus: "stopped" });
+}
+
+// Reconcile every instance of one sharded migration toward its desired state. Aggregates
+// instance wrapper statuses into the migration row: crash_looping if ANY instance is
+// crash-looping, restarting if ANY was just (re)started, else running.
+function reconcileSharded(m: Migration): void {
+  const instances = getInstances(m.id);
+  if (instances.length === 0) return; // nothing yet to supervise
+
+  if (!m.desiredRunning) {
+    for (const inst of instances) {
+      const name = instanceSessionName(m.id, inst.shardId);
+      if (sessionExists(name)) killSession(name);
+    }
+    if (m.supervisionStatus !== "stopped") updateMigration(m.id, { supervisionStatus: "stopped" });
+    return;
+  }
+
+  let anyCrashLooping = false;
+  let anyRestarted = false;
+  let maxAttempt = 0;
+  let lastExit: number | null = null;
+
+  for (const inst of instances) {
+    const name = instanceSessionName(m.id, inst.shardId);
+    const status = readInstanceWrapperStatus(m.id, inst.shardId);
+    if (status?.state === "crash_looping") {
+      anyCrashLooping = true;
+      maxAttempt = Math.max(maxAttempt, status.attempt);
+      lastExit = status.lastExitCode;
+      killSession(name);
+      continue;
+    }
+    if (!sessionExists(name)) {
+      const fresh = getMigration(m.id);
+      if (fresh) {
+        superviseStartInstance(fresh, inst);
+        anyRestarted = true;
+      }
+    }
+  }
+
+  if (anyCrashLooping) {
+    updateMigration(m.id, {
+      supervisionStatus: "crash_looping",
+      restartCount: maxAttempt,
+      lastExitCode: lastExit,
+    });
+  } else if (anyRestarted) {
+    updateMigration(m.id, { supervisionStatus: "restarting", lastRestartAt: Date.now() });
+  } else if (m.supervisionStatus !== "running") {
+    updateMigration(m.id, { supervisionStatus: "running" });
+  }
+}
+
 export function superviseStart(migration: Migration): void {
   const name = sessionName(migration.id);
   // Ensure directory exists before any file writes for this migration.
@@ -103,13 +259,28 @@ export function retrySupervision(id: string): void {
 // (each poll tick, on startup, after reboot). This is the single recovery path.
 export function reconcile(): void {
   const migrations = getAllMigrations();
-  const known = new Set(migrations.map((m) => sessionName(m.id)));
+  // Build the set of expected session names. Sharded migrations expect one session per
+  // instance (msync-<id>-<shardId>); single-instance migrations expect msync-<id>.
+  const known = new Set<string>();
+  for (const m of migrations) {
+    if (m.sharded) {
+      for (const inst of getInstances(m.id)) known.add(instanceSessionName(m.id, inst.shardId));
+    } else {
+      known.add(sessionName(m.id));
+    }
+  }
 
   for (const m of migrations) {
     // Per-migration isolation: a failure recovering one migration (e.g. a config write
     // error or a missing binary in superviseStart) must not stop the others from being
     // reconciled. Record the failure on the row and move on.
     try {
+      // Sharded migrations are reconciled instance-by-instance on a separate branch; the
+      // single-instance path below is left exactly as it was.
+      if (m.sharded) {
+        reconcileSharded(m);
+        continue;
+      }
       const name = sessionName(m.id);
       if (m.desiredRunning) {
         const status = readWrapperStatus(m.id);

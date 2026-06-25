@@ -1,12 +1,13 @@
-import { getAllMigrations, updateMigration, insertMetric } from "./db";
+import { getAllMigrations, getInstances, updateMigration, insertMetric } from "./db";
 import { fetchProgress, sendCommand, isProcessAlive } from "./process-manager";
 import type { ProgressResponse } from "./process-manager";
 import { reconcile } from "./supervisor";
-import { sessionName, sessionExists, killSession } from "./tmux";
+import { sessionName, instanceSessionName, sessionExists, killSession } from "./tmux";
 import { classifyTick } from "./health-monitor";
 import { getSupervisionConfig } from "./supervision-config";
 import { buildStartBody } from "./config-generator";
 import { getProcessStats } from "./resource-stats";
+import { aggregateInstanceProgress } from "./aggregate-progress";
 import type { MetricInput, MongosyncState, Migration } from "./types";
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -94,6 +95,116 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
   }
 }
 
+// Probe and aggregate all instances of a SHARDED migration. Each instance is probed on its
+// own port; a respawned instance (IDLE/INITIALIZING while the migration should be RUNNING)
+// gets /start re-driven; an instance that is unreachable for hungTicks ticks is restarted
+// (kill its session → reconcile recreates it). The N results are aggregated into ONE metric
+// for the migration. The single-instance probe() above is untouched.
+async function probeSharded(m: Migration, hungTicks: number): Promise<void> {
+  const instances = getInstances(m.id);
+  if (instances.length === 0) return;
+
+  const results: (ProgressResponse | null)[] = await Promise.all(
+    instances.map(async (inst) => {
+      const key = `${m.id}:${inst.shardId}`;
+      try {
+        const resp = await fetchProgress(inst.port);
+        unreachable.set(key, 0);
+        const liveState = resp.progress?.state as MongosyncState | undefined;
+        // Re-drive /start on a freshly-respawned instance, same logic as single-instance.
+        if (
+          m.desiredRunning &&
+          m.state === "RUNNING" &&
+          liveState &&
+          RESUME_STATES.includes(liveState)
+        ) {
+          try {
+            await sendCommand(inst.port, "start", buildStartBody(m));
+          } catch {
+            /* next tick retries */
+          }
+        }
+        return resp;
+      } catch {
+        // Unreachable: count toward hung-restart only while the migration is supervised.
+        if (m.desiredRunning) {
+          const name = instanceSessionName(m.id, inst.shardId);
+          if (sessionExists(name)) {
+            const { consecutive, action } = classifyTick(
+              unreachable.get(key) ?? 0,
+              "unreachable",
+              hungTicks
+            );
+            unreachable.set(key, consecutive);
+            if (action === "restart") {
+              killSession(name);
+              unreachable.set(key, 0);
+            }
+          }
+        }
+        return null;
+      }
+    })
+  );
+
+  // Aggregate the per-instance progress into a single migration-level metric.
+  const agg = aggregateInstanceProgress(results, m.plannedTotalBytes);
+  if (agg.state !== m.state) updateMigration(m.id, { state: agg.state });
+
+  // Sum OS-level resource stats across all instances (each instance is a separate process).
+  const stats = await aggregateInstanceStats(m);
+
+  const metric: MetricInput = {
+    migrationId: m.id,
+    state: agg.state,
+    copyProgress: agg.copyProgress,
+    canCommit: agg.canCommit ? 1 : 0,
+    estimatedCopiedBytes: agg.estimatedCopiedBytes,
+    estimatedTotalBytes: agg.estimatedTotalBytes,
+    lagTimeSeconds: agg.lagTimeSeconds,
+    totalEventsApplied: agg.totalEventsApplied,
+    estimatedSecondsToCEACatchup: agg.estimatedSecondsToCEACatchup,
+    indexesBuilt: 0,
+    totalIndexesToBuild: 0,
+    sourcePingMs: agg.sourcePingMs,
+    destPingMs: agg.destPingMs,
+    cpuPercent: stats.cpuPercent,
+    rssBytes: stats.rssBytes,
+    uptimeSec: stats.uptimeSec,
+  };
+  // Only persist a metric once at least one instance has reported, so we don't write a row
+  // of zeros while every instance is still initializing.
+  if (agg.reachableCount > 0) insertMetric(metric);
+}
+
+// Sum CPU/RSS and take the MAX uptime across a sharded migration's instance processes.
+// Best-effort: returns nulls when nothing could be read. Reuses getProcessStats by faking a
+// per-instance Migration whose config-path marker pgrep matches (`<migrationId>-<shardId>.yaml`).
+async function aggregateInstanceStats(
+  m: Migration
+): Promise<{ cpuPercent: number | null; rssBytes: number | null; uptimeSec: number | null }> {
+  try {
+    const instances = getInstances(m.id);
+    const each = await Promise.all(
+      instances.map((inst) => {
+        const safe = inst.shardId.replace(/[^a-zA-Z0-9._-]/g, "_");
+        // getProcessStats matches the config-file marker `${id}.yaml`; the instance config
+        // is `${migrationId}-${shardId}.yaml`, so pass that compound id.
+        return getProcessStats({ ...m, id: `${m.id}-${safe}`, pid: null });
+      })
+    );
+    const got = each.filter((s): s is NonNullable<typeof s> => s !== null);
+    if (got.length === 0) return { cpuPercent: null, rssBytes: null, uptimeSec: null };
+    return {
+      cpuPercent: got.reduce((sum, s) => sum + s.cpuPercent, 0),
+      rssBytes: got.reduce((sum, s) => sum + s.rssBytes, 0),
+      uptimeSec: Math.max(...got.map((s) => s.uptimeSec)),
+    };
+  } catch {
+    return { cpuPercent: null, rssBytes: null, uptimeSec: null };
+  }
+}
+
 export async function pollOnce(): Promise<void> {
   // This runs on a setInterval; a throw here would be an unhandled rejection that kills
   // future ticks. Every step is therefore guarded so one bad migration (or a transient
@@ -117,6 +228,12 @@ export async function pollOnce(): Promise<void> {
   for (const m of migrations) {
     try {
       if (!m.desiredRunning && !ACTIVE_STATES.includes(m.state)) continue;
+
+      // Sharded migration: probe + aggregate all instances on a separate branch.
+      if (m.sharded) {
+        await probeSharded(m, cfg.hungTicks);
+        continue;
+      }
 
       // Legacy / unsupervised migration: if the PID we stored is no longer alive, clear it
       // and skip probing — there is no process to query and no supervisor to restart it.

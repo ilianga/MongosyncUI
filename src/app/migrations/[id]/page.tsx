@@ -9,6 +9,7 @@ import { ActionButtons } from "@/components/action-buttons";
 import { Button } from "@/components/ui/button";
 import { ProgressPanel } from "@/components/progress-panel";
 import { MigrationProgress } from "@/components/migration-progress";
+import { ShardBreakdown } from "@/components/shard-breakdown";
 import { VerificationPanel } from "@/components/verification-panel";
 import { MetricsCharts } from "@/components/metrics-charts";
 import { LogsPanel } from "@/components/logs-panel";
@@ -286,6 +287,9 @@ export default function MigrationDetailPage() {
           />
         </ErrorBoundary>
         <ResourceStatsRow metric={metrics.length ? metrics[metrics.length - 1] : undefined} />
+        <ErrorBoundary label="Per-shard instances">
+          <ShardBreakdown migrationId={migration.id} sharded={!!migration.sharded} />
+        </ErrorBoundary>
         <ErrorBoundary label="Progress details">
           <ProgressPanel
             data={progress}

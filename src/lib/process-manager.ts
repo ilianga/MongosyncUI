@@ -8,7 +8,7 @@ import { updateMigration } from "./db";
 import { resolveMongosyncBin, getMongosyncPath } from "./resolve-bin";
 import { hasTmux } from "./tmux";
 import { getSupervisionConfig } from "./supervision-config";
-import { superviseStart, superviseStop } from "./supervisor";
+import { superviseStart, superviseStop, superviseStartSharded, superviseStopSharded } from "./supervisor";
 
 export { resolveMongosyncBin } from "./resolve-bin";
 
@@ -151,6 +151,31 @@ export function killMongosync(migration: Migration): void {
     try { process.kill(migration.pid, "SIGTERM"); } catch { /* already gone */ }
   }
   updateMigration(migration.id, { pid: null });
+}
+
+// ── Sharded multi-instance spawn/kill ──
+// A sharded migration runs one supervised tmux session per source-shard instance. This
+// path REQUIRES tmux (the respawn wrapper + per-instance supervision); legacy detached
+// spawn is single-instance only. The single-instance spawnMongosync/killMongosync above
+// are not touched — sharded migrations branch to these functions at their call sites.
+
+/** Spawn every instance of a sharded migration under supervision. Requires tmux. */
+export function spawnShardedInstances(migration: Migration): void {
+  if (!hasTmux()) {
+    throw new Error(
+      "Sharded (multi-instance) migrations require tmux for supervision. Install tmux and retry."
+    );
+  }
+  assertMongosyncRunnable();
+  superviseStartSharded(migration);
+}
+
+/** Tear down every instance of a sharded migration (intentional stop by default). */
+export function killShardedInstances(
+  migration: Migration,
+  opts: { intentional?: boolean } = {}
+): void {
+  superviseStopSharded(migration.id, { intentional: opts.intentional !== false });
 }
 
 /**

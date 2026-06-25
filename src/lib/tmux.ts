@@ -14,6 +14,15 @@ export function sessionName(id: string): string {
   return `msync-${id}`;
 }
 
+/**
+ * tmux session name for ONE instance of a sharded migration: `msync-<migrationId>-<shardId>`.
+ * Still prefixed `msync-`, so listMsyncSessions() and the orphan sweep cover it too.
+ */
+export function instanceSessionName(migrationId: string, shardId: string): string {
+  const safe = shardId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `msync-${migrationId}-${safe}`;
+}
+
 export function sessionExists(name: string): boolean {
   return tmux(["has-session", "-t", name]).status === 0;
 }

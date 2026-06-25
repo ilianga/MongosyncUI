@@ -8,6 +8,7 @@ import type {
   Metric,
   MetricInput,
   SavedConnection,
+  Instance,
 } from "./types";
 import type { ConnectionConfig } from "./connection";
 
@@ -87,6 +88,17 @@ function initSchema(database: Database.Database): void {
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
     );
+    -- One mongosync instance per SOURCE shard for a sharded migration. Single-instance
+    -- migrations have NO rows here (they use migrations.port directly). Cascade-deleted
+    -- with the parent migration.
+    CREATE TABLE IF NOT EXISTS instances (
+      id TEXT PRIMARY KEY,
+      migrationId TEXT NOT NULL REFERENCES migrations(id) ON DELETE CASCADE,
+      shardId TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_instances_migration ON instances(migrationId);
   `);
   migrateSchema(database);
 }
@@ -112,6 +124,10 @@ function migrateSchema(database: Database.Database): void {
   // Multi-destination groups: nullable label that ties N independent migrations
   // (one source → N destinations) together for grouped display on the dashboard.
   add("groupName", "groupName TEXT");
+  // Sharded multi-instance: a sharded source runs N mongosync instances (one per shard).
+  // Single-instance migrations keep sharded=0/instanceCount=1 and the existing path.
+  add("sharded", "sharded INTEGER NOT NULL DEFAULT 0");
+  add("instanceCount", "instanceCount INTEGER NOT NULL DEFAULT 1");
 
   // metrics table: additive columns added after the original schema.
   const metricCols = new Set(
@@ -141,6 +157,8 @@ export function createMigration(input: CreateMigrationInput): Migration {
     sourceConn: input.sourceConn ?? null,
     destConn: input.destConn ?? null,
     groupName: input.groupName ?? null,
+    sharded: input.sharded ?? 0,
+    instanceCount: input.instanceCount ?? 1,
     config: JSON.stringify(input.config),
     state: "IDLE",
     port: input.port,
@@ -157,13 +175,48 @@ export function createMigration(input: CreateMigrationInput): Migration {
   };
   getDb()
     .prepare(
-      `INSERT INTO migrations (id, name, sourceUri, destUri, sourceConn, destConn, groupName, config, state, port, pid,
+      `INSERT INTO migrations (id, name, sourceUri, destUri, sourceConn, destConn, groupName, sharded, instanceCount, config, state, port, pid,
          desiredRunning, supervisionStatus, restartCount, lastExitCode, lastRestartAt, stopped, plannedTotalBytes, createdAt, updatedAt)
-       VALUES (@id, @name, @sourceUri, @destUri, @sourceConn, @destConn, @groupName, @config, @state, @port, @pid,
+       VALUES (@id, @name, @sourceUri, @destUri, @sourceConn, @destConn, @groupName, @sharded, @instanceCount, @config, @state, @port, @pid,
          @desiredRunning, @supervisionStatus, @restartCount, @lastExitCode, @lastRestartAt, @stopped, @plannedTotalBytes, @createdAt, @updatedAt)`
     )
     .run(migration);
   return migration;
+}
+
+// ── Sharded migration instances (one mongosync per source shard) ──
+
+export function createInstances(
+  migrationId: string,
+  specs: { shardId: string; port: number }[]
+): Instance[] {
+  const now = Date.now();
+  const rows: Instance[] = specs.map((s) => ({
+    id: nanoid(),
+    migrationId,
+    shardId: s.shardId,
+    port: s.port,
+    createdAt: now,
+  }));
+  const stmt = getDb().prepare(
+    `INSERT INTO instances (id, migrationId, shardId, port, createdAt)
+     VALUES (@id, @migrationId, @shardId, @port, @createdAt)`
+  );
+  const insertAll = getDb().transaction((items: Instance[]) => {
+    for (const r of items) stmt.run(r);
+  });
+  insertAll(rows);
+  return rows;
+}
+
+export function getInstances(migrationId: string): Instance[] {
+  return getDb()
+    .prepare("SELECT * FROM instances WHERE migrationId = ? ORDER BY shardId ASC")
+    .all(migrationId) as Instance[];
+}
+
+export function deleteInstances(migrationId: string): void {
+  getDb().prepare("DELETE FROM instances WHERE migrationId = ?").run(migrationId);
 }
 
 export function getMigration(id: string): Migration | undefined {
