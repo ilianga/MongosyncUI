@@ -1,5 +1,5 @@
 import { getMigration } from "@/lib/db";
-import { getLogDir } from "@/lib/paths";
+import { getLogDir, getInstanceLogDir } from "@/lib/paths";
 import fs from "fs";
 import path from "path";
 import { handle, jsonOk, ApiError } from "@/lib/api";
@@ -24,7 +24,12 @@ export const GET = handle(async (req: Request, { params }: Ctx) => {
   const streamParam = search.get("stream") || "mongosync";
   const fileName = STREAM_FILES[streamParam] ?? STREAM_FILES.mongosync;
 
-  const logFile = path.join(getLogDir(id), fileName);
+  // Optional per-shard selector: when present, read from the instance's log subdir
+  // (logs/<id>/<shard>/) instead of the migration root. getInstanceLogDir sanitises the
+  // shard id, so it can't escape the migration's log directory.
+  const shard = search.get("shard");
+  const dir = shard ? getInstanceLogDir(id, shard) : getLogDir(id);
+  const logFile = path.join(dir, fileName);
   if (!fs.existsSync(logFile)) return jsonOk({ lines: [] });
 
   let all: string[];

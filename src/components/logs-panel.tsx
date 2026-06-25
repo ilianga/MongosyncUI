@@ -31,16 +31,33 @@ function levelColor(level: string): string {
   }
 }
 
-export function LogsPanel({ migrationId }: { migrationId: string }) {
+// Sentinel value for the root (coordinator) log dir in the shard selector.
+const ROOT_SHARD = "";
+
+export function LogsPanel({
+  migrationId,
+  shards,
+}: {
+  migrationId: string;
+  /**
+   * Optional source shard ids. When provided (sharded migration), a selector lets the user
+   * tail a specific instance's logs (logs/<id>/<shard>/) or the coordinator/root dir.
+   */
+  shards?: string[];
+}) {
   const [lines, setLines] = useState<string[]>([]);
   const [stream, setStream] = useState<Stream>("mongosync");
+  const [shard, setShard] = useState<string>(ROOT_SHARD);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     const fetchLogs = async () => {
       try {
-        const res = await fetch(`/api/migrations/${migrationId}/logs?lines=300&stream=${stream}`);
+        const shardQuery = shard ? `&shard=${encodeURIComponent(shard)}` : "";
+        const res = await fetch(
+          `/api/migrations/${migrationId}/logs?lines=300&stream=${stream}${shardQuery}`
+        );
         const data = await res.json();
         if (!cancelled) setLines(data.lines || []);
       } catch {
@@ -53,7 +70,7 @@ export function LogsPanel({ migrationId }: { migrationId: string }) {
       cancelled = true;
       clearInterval(t);
     };
-  }, [migrationId, stream]);
+  }, [migrationId, stream, shard]);
 
   useEffect(() => {
     if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -63,7 +80,7 @@ export function LogsPanel({ migrationId }: { migrationId: string }) {
     const blob = new Blob([lines.join("\n")], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${migrationId}-${stream}.log`;
+    a.download = `${migrationId}${shard ? `-${shard}` : ""}-${stream}.log`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -88,9 +105,26 @@ export function LogsPanel({ migrationId }: { migrationId: string }) {
             </button>
           ))}
         </div>
-        <Button size="sm" variant="ghost" onClick={download} className="text-xs">
-          Download
-        </Button>
+        <div className="flex items-center gap-2">
+          {shards && shards.length > 0 && (
+            <select
+              value={shard}
+              onChange={(e) => setShard(e.target.value)}
+              aria-label="Select shard logs"
+              className="rounded-md border border-input bg-background px-2 py-1 text-xs font-mono text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <option value={ROOT_SHARD}>coordinator</option>
+              {shards.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          )}
+          <Button size="sm" variant="ghost" onClick={download} className="text-xs">
+            Download
+          </Button>
+        </div>
       </div>
 
       {/* Terminal area */}

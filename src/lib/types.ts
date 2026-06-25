@@ -78,6 +78,12 @@ export interface StartConfig {
   disableTelemetry?: boolean;
   disableVerification?: boolean;
   enableCappedCollectionHandling?: boolean;
+  /**
+   * Frequently-updated ("hot") document IDs copied during the commit stage (mongosync's
+   * `hotDocIDs` config option). Arbitrary JSON — stored parsed and emitted verbatim into
+   * the YAML config when set.
+   */
+  hotDocIDs?: unknown;
 }
 
 // Structured connection config, persisted as JSON in Migration.sourceConn/destConn.

@@ -12,8 +12,12 @@ const base = {
   verificationEnabled: true,
   loadLevel: 3,
   verbosity: "INFO" as const,
+  createIndexesBatchSize: undefined,
+  enableCappedCollectionHandling: false,
+  hotDocIDs: "",
   includeNamespaces: [],
   excludeNamespaces: [],
+  createSupportingIndexes: false,
   shardingEntries: [],
 };
 
@@ -142,6 +146,52 @@ describe("formValuesToConfig", () => {
 
   it("maps verification toggle to verificationEnabled", () => {
     expect(formValuesToConfig(base).verificationEnabled).toBe(true);
+  });
+
+  it("maps createIndexesBatchSize when set and omits when undefined", () => {
+    expect(formValuesToConfig(base).createIndexesBatchSize).toBeUndefined();
+    expect(formValuesToConfig({ ...base, createIndexesBatchSize: 16 }).createIndexesBatchSize).toBe(16);
+  });
+
+  it("maps enableCappedCollectionHandling only when true", () => {
+    expect(formValuesToConfig(base).enableCappedCollectionHandling).toBeUndefined();
+    expect(
+      formValuesToConfig({ ...base, enableCappedCollectionHandling: true }).enableCappedCollectionHandling
+    ).toBe(true);
+  });
+
+  it("parses hotDocIDs JSON when provided and omits when blank", () => {
+    expect(formValuesToConfig(base).hotDocIDs).toBeUndefined();
+    const cfg = formValuesToConfig({ ...base, hotDocIDs: '{"mydb.mycol": ["a", "b"]}' });
+    expect(cfg.hotDocIDs).toEqual({ "mydb.mycol": ["a", "b"] });
+  });
+});
+
+describe("migrationFormSchema — hotDocIDs validation", () => {
+  it("accepts blank and valid JSON", () => {
+    expect(migrationFormSchema.safeParse({ ...base, hotDocIDs: "" }).success).toBe(true);
+    expect(migrationFormSchema.safeParse({ ...base, hotDocIDs: '{"a":1}' }).success).toBe(true);
+  });
+  it("rejects invalid JSON", () => {
+    expect(migrationFormSchema.safeParse({ ...base, hotDocIDs: "{not json" }).success).toBe(false);
+  });
+});
+
+describe("formValuesToConfig — sharding createSupportingIndexes", () => {
+  const withEntry = (createSupportingIndexes: boolean) =>
+    formValuesToConfig({
+      ...base,
+      createSupportingIndexes,
+      shardingEntries: [{ database: "db", collection: "c", shardKey: "userId:1" }],
+    });
+
+  it("includes createSupportingIndexes only when enabled", () => {
+    expect(withEntry(false).sharding).not.toHaveProperty("createSupportingIndexes");
+    expect(withEntry(true).sharding!.createSupportingIndexes).toBe(true);
+  });
+
+  it("omits sharding entirely when there are no entries even if the toggle is on", () => {
+    expect(formValuesToConfig({ ...base, createSupportingIndexes: true }).sharding).toBeUndefined();
   });
 });
 

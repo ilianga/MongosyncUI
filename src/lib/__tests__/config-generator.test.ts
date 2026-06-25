@@ -85,6 +85,20 @@ describe("generateConfig", () => {
     expect(cfg.disableVerification).toBe(true);
     expect(cfg.enableCappedCollectionHandling).toBe(true);
   });
+
+  it("emits hotDocIDs verbatim when set and omits when absent", async () => {
+    const { generateConfig } = await load();
+    const omitted = yaml.load(
+      fs.readFileSync(generateConfig(migrationWith({})), "utf-8")
+    ) as Record<string, unknown>;
+    expect(omitted).not.toHaveProperty("hotDocIDs");
+
+    const hot = { "mydb.mycol": ["a", "b"] };
+    const cfg = yaml.load(
+      fs.readFileSync(generateConfig(migrationWith({ hotDocIDs: hot })), "utf-8")
+    ) as Record<string, unknown>;
+    expect(cfg.hotDocIDs).toEqual(hot);
+  });
 });
 
 describe("buildStartBody", () => {

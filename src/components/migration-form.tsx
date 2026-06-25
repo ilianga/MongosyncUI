@@ -1,6 +1,6 @@
 "use client";
 
-import { useForm } from "react-hook-form";
+import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { migrationFormSchema, formValuesToConfig, connToConfig, type MigrationFormValues } from "@/lib/schemas";
 import { buildConnectionString } from "@/lib/connection";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -65,9 +66,13 @@ export function MigrationForm() {
       reversible: false, buildIndexes: "beforeDataCopy", detectRandomId: true,
       preExistingDestinationData: false, verificationEnabled: false,
       loadLevel: 3, verbosity: "INFO",
-      includeNamespaces: [], excludeNamespaces: [], shardingEntries: [],
+      createIndexesBatchSize: undefined, enableCappedCollectionHandling: false, hotDocIDs: "",
+      includeNamespaces: [], excludeNamespaces: [],
+      createSupportingIndexes: false, shardingEntries: [],
     },
   });
+
+  const shardingFields = useFieldArray({ control: form.control, name: "shardingEntries" });
 
   const reversible = form.watch("reversible");
   const rowsHaveRealFilter = (rows: { database?: string; databaseRegex?: string }[]) =>
@@ -321,6 +326,112 @@ export function MigrationForm() {
                 ))}
               </select>
             </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="createIndexesBatchSize">Index Build Batch Size</Label>
+              <Input
+                id="createIndexesBatchSize"
+                type="number"
+                min={1}
+                max={64}
+                placeholder="auto"
+                className="w-28"
+                {...form.register("createIndexesBatchSize", {
+                  setValueAs: (v) =>
+                    v === "" || v === null || v === undefined ? undefined : Number(v),
+                })}
+              />
+            </div>
+            {form.formState.errors.createIndexesBatchSize && (
+              <p className="text-sm text-destructive">1–64.</p>
+            )}
+            <div className="flex items-center justify-between">
+              <Label htmlFor="enableCappedCollectionHandling">Enable Capped Collection Handling</Label>
+              <Switch
+                id="enableCappedCollectionHandling"
+                checked={form.watch("enableCappedCollectionHandling")}
+                onCheckedChange={(v) => form.setValue("enableCappedCollectionHandling", v)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="hotDocIDs">Hot Document IDs (JSON)</Label>
+              <Textarea
+                id="hotDocIDs"
+                rows={4}
+                placeholder='e.g. {"mydb.mycol": ["id1", "id2"]}'
+                className="font-mono text-xs"
+                {...form.register("hotDocIDs")}
+              />
+              <p className="text-xs text-muted-foreground">
+                Frequently-updated document IDs copied during the commit stage. Must be valid JSON.
+              </p>
+              {form.formState.errors.hotDocIDs && (
+                <p className="text-sm text-destructive">{form.formState.errors.hotDocIDs.message}</p>
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+
+      {/* ── Sharding (replica set → sharded destination) ── */}
+      <div className={cn(sectionClass, "space-y-0")}>
+        <Collapsible>
+          <CollapsibleTrigger className="flex w-full items-center justify-between py-0.5 text-sm font-semibold text-foreground hover:text-primary transition-colors">
+            <span>Sharding (replica set → sharded destination)</span>
+            <span className="text-xs font-normal text-muted-foreground">Optional</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-4 pt-4">
+            <p className={sectionHelperClass}>
+              When the destination is a sharded cluster, pre-shard collections during sync.
+              Shard key format: <code>field:1, other:hashed</code>.
+            </p>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="createSupportingIndexes">Create Supporting Indexes</Label>
+              <Switch
+                id="createSupportingIndexes"
+                checked={form.watch("createSupportingIndexes")}
+                onCheckedChange={(v) => form.setValue("createSupportingIndexes", v)}
+              />
+            </div>
+            {shardingFields.fields.map((field, i) => (
+              <div key={field.id} className="space-y-1.5 rounded-md border border-border p-2">
+                <div className="grid grid-cols-[1fr_1fr_auto] gap-1.5">
+                  <Input
+                    placeholder="database"
+                    className="font-mono text-sm h-8"
+                    {...form.register(`shardingEntries.${i}.database`)}
+                  />
+                  <Input
+                    placeholder="collection"
+                    className="font-mono text-sm h-8"
+                    {...form.register(`shardingEntries.${i}.collection`)}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                    onClick={() => shardingFields.remove(i)}
+                    aria-label="Remove sharding entry"
+                  >
+                    ×
+                  </Button>
+                </div>
+                <Input
+                  placeholder="shard key e.g. userId:1, region:hashed"
+                  className="font-mono text-sm h-8"
+                  {...form.register(`shardingEntries.${i}.shardKey`)}
+                />
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-dashed text-muted-foreground hover:text-foreground"
+              onClick={() => shardingFields.append({ database: "", collection: "", shardKey: "" })}
+            >
+              + Add sharding entry
+            </Button>
           </CollapsibleContent>
         </Collapsible>
       </div>

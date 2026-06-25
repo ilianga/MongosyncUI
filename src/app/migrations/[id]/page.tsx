@@ -153,6 +153,8 @@ export default function MigrationDetailPage() {
   const router = useRouter();
   const id = params.id;
   const [commitOpen, setCommitOpen] = useState(false);
+  // Source shard ids for the per-shard log selector (sharded migrations only).
+  const [shardIds, setShardIds] = useState<string[]>([]);
 
   const fetcher = useCallback(
     (signal: AbortSignal) => fetchDetail(id, signal),
@@ -170,6 +172,27 @@ export default function MigrationDetailPage() {
   useEffect(() => {
     if (error instanceof MigrationNotFoundError) router.push("/");
   }, [error, router]);
+
+  // For sharded migrations, fetch the per-instance shard ids once so the Logs panel can
+  // offer a per-shard selector. Non-sharded migrations skip this entirely.
+  const sharded = !!data?.migration.sharded;
+  useEffect(() => {
+    if (!sharded) return; // only sharded migrations consume the shard list
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/migrations/${id}/instances`);
+        if (!res.ok) return;
+        const rows = (await res.json()) as { shardId: string }[];
+        if (!cancelled) setShardIds(rows.map((r) => r.shardId).filter(Boolean));
+      } catch {
+        /* leave selector hidden on failure */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sharded, id]);
 
   // Surface transient refresh failures once, keeping the last good render.
   const notifiedRef = useRef(false);
@@ -322,7 +345,10 @@ export default function MigrationDetailPage() {
         <section className="space-y-3">
           <SectionHeading>Logs</SectionHeading>
           <ErrorBoundary label="Logs">
-            <LogsPanel migrationId={migration.id} />
+            <LogsPanel
+              migrationId={migration.id}
+              shards={migration.sharded ? shardIds : undefined}
+            />
           </ErrorBoundary>
         </section>
       </div>

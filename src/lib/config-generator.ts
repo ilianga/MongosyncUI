@@ -39,6 +39,7 @@ function buildConfigObject(args: {
   out.disableTelemetry = true;
   if (cfg.disableVerification) out.disableVerification = true;
   if (cfg.enableCappedCollectionHandling) out.enableCappedCollectionHandling = true;
+  if (cfg.hotDocIDs !== undefined && cfg.hotDocIDs !== null) out.hotDocIDs = cfg.hotDocIDs;
 
   return out;
 }

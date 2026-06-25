@@ -210,8 +210,31 @@ export const migrationFormSchema = z.object({
   verificationEnabled: z.boolean().default(false),
   loadLevel: z.number().min(1).max(4).default(3),
   verbosity: z.enum(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "PANIC"]).default("INFO"),
+  // Optional index-build batch size (1–64). Empty/0 means "leave to mongosync".
+  createIndexesBatchSize: z.number().min(1).max(64).optional(),
+  // Optional (output) so existing MigrationFormValues literals that predate these fields
+  // stay valid; the form supplies a concrete default via useForm's defaultValues.
+  enableCappedCollectionHandling: z.boolean().optional(),
+  // Hot (frequently-updated) document IDs as a JSON string (textarea); parsed on submit.
+  hotDocIDs: z
+    .string()
+    .optional()
+    .refine(
+      (s) => {
+        if (!s || !s.trim()) return true;
+        try {
+          JSON.parse(s);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Must be valid JSON" }
+    ),
   includeNamespaces: z.array(namespaceRowSchema).default([]),
   excludeNamespaces: z.array(namespaceRowSchema).default([]),
+  // rs → sharded destination: create the destination collections' supporting indexes.
+  createSupportingIndexes: z.boolean().optional(),
   shardingEntries: z.array(shardingEntrySchema).default([]),
 });
 
@@ -240,6 +263,17 @@ export function formValuesToConfig(values: MigrationFormValues): StartConfig {
   };
   if (values.loadLevel !== 3) cfg.loadLevel = values.loadLevel;
 
+  if (values.createIndexesBatchSize !== undefined)
+    cfg.createIndexesBatchSize = values.createIndexesBatchSize;
+  if (values.enableCappedCollectionHandling) cfg.enableCappedCollectionHandling = true;
+  if (values.hotDocIDs && values.hotDocIDs.trim()) {
+    try {
+      cfg.hotDocIDs = JSON.parse(values.hotDocIDs);
+    } catch {
+      /* schema validation guards this; ignore unparseable input defensively */
+    }
+  }
+
   const inc = values.includeNamespaces.map(rowToFilter).filter((x): x is NamespaceFilter => x !== null);
   const exc = values.excludeNamespaces.map(rowToFilter).filter((x): x is NamespaceFilter => x !== null);
   if (inc.length) cfg.includeNamespaces = inc;
@@ -247,6 +281,7 @@ export function formValuesToConfig(values: MigrationFormValues): StartConfig {
 
   if (values.shardingEntries.length) {
     cfg.sharding = {
+      ...(values.createSupportingIndexes ? { createSupportingIndexes: true } : {}),
       shardingEntries: values.shardingEntries.map((e) => ({
         database: e.database,
         collection: e.collection,
