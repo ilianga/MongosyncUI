@@ -157,3 +157,68 @@ describe("buildStartBody", () => {
     expect(body).not.toHaveProperty("enableUserWriteBlocking");
   });
 });
+
+describe("always-off telemetry / verification", () => {
+  it("generateConfig always emits disableTelemetry: true even when config omits it", async () => {
+    const { generateConfig } = await load();
+    const p = generateConfig(migrationWith({}));
+    const cfg = yaml.load(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+    expect(cfg.disableTelemetry).toBe(true);
+  });
+
+  it("buildStartBody always disables verification when config omits it", async () => {
+    const { buildStartBody } = await load();
+    const body = buildStartBody(migrationWith({}));
+    expect(body.verification).toEqual({ enabled: false });
+  });
+});
+
+describe("buildConfigPreview", () => {
+  const baseInput = {
+    sourceUri: "mongodb://user:secret@src:27017/",
+    destUri: "mongodb://admin:hunter2@dst:27017/",
+    config: { loadLevel: 4, verbosity: "DEBUG" } as StartConfig,
+  };
+
+  it("returns a YAML string and a startBody object without writing any file", async () => {
+    const { buildConfigPreview } = await load();
+    const dirBefore = fs.readdirSync(testDir);
+    const { yaml: y, startBody } = buildConfigPreview(baseInput);
+    expect(typeof y).toBe("string");
+    expect(startBody.source).toBe("cluster0");
+    expect(startBody.destination).toBe("cluster1");
+    // No file written (preview is pure).
+    expect(fs.readdirSync(testDir)).toEqual(dirBefore);
+  });
+
+  it("always sets telemetry off in the YAML and verification off in the start body", async () => {
+    const { buildConfigPreview } = await load();
+    const { yaml: y, startBody } = buildConfigPreview({ ...baseInput, config: {} });
+    const cfg = yaml.load(y) as Record<string, unknown>;
+    expect(cfg.disableTelemetry).toBe(true);
+    expect(startBody.verification).toEqual({ enabled: false });
+  });
+
+  it("only enables verification when explicitly opted in (never by the UI)", async () => {
+    const { buildConfigPreview } = await load();
+    const optedIn = buildConfigPreview({ ...baseInput, config: { verificationEnabled: true } });
+    expect(optedIn.startBody.verification).toEqual({ enabled: true });
+  });
+
+  it("uses an illustrative port when none is provided", async () => {
+    const { buildConfigPreview } = await load();
+    const cfg = yaml.load(buildConfigPreview(baseInput).yaml) as Record<string, unknown>;
+    expect(cfg.port).toBe(27182);
+  });
+
+  it("the preview is maskable: passwords are removed when masked per-line (as the API does)", async () => {
+    const { buildConfigPreview } = await load();
+    const { maskUri } = await import("@/lib/format");
+    const { yaml: y } = buildConfigPreview(baseInput);
+    const masked = y.split("\n").map(maskUri).join("\n");
+    expect(masked).not.toContain("secret");
+    expect(masked).not.toContain("hunter2");
+    expect(masked).toContain("user:***@src");
+    expect(masked).toContain("admin:***@dst");
+  });
+});

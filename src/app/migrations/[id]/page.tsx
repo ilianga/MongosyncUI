@@ -197,7 +197,7 @@ export default function MigrationDetailPage() {
                   Stopped
                 </span>
               ) : (
-                <StateBadge state={migration.state} />
+                <StateBadge state={migration.state} withLegend />
               )}
               <SupervisionBadge status={migration.supervisionStatus} />
             </div>
