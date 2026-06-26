@@ -3,7 +3,6 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useState } from "react"
-import { ThemeToggle } from "./theme-toggle"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
@@ -289,7 +288,7 @@ export function Sidebar({
           })}
         </nav>
 
-        {/* Footer: binary chip + theme toggle */}
+        {/* Footer: binary chip + logout (theme toggle lives in the topbar) */}
         <div className="mt-auto flex flex-col gap-2 border-t border-sidebar-border px-2 py-3">
           {/* Version chip */}
           <div className={cn("flex items-center gap-2 px-1", collapsed && "md:justify-center")}>
@@ -318,14 +317,13 @@ export function Sidebar({
             )}
           </div>
 
-          {/* Theme toggle + logout */}
+          {/* Logout */}
           <div
             className={cn(
               "flex items-center gap-1",
               collapsed ? "flex-col md:items-center" : "justify-center md:justify-start md:px-1"
             )}
           >
-            <ThemeToggle />
             <button
               type="button"
               onClick={async () => {

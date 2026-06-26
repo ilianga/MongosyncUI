@@ -1,5 +1,6 @@
 import { RunningIndicator } from "./running-indicator"
 import { NotificationBell } from "./notification-bell"
+import { ThemeToggle } from "./theme-toggle"
 
 interface TopbarProps {
   title: string
@@ -13,11 +14,12 @@ export function Topbar({ title, subtitle, action }: TopbarProps) {
   return (
     <div className="sticky top-0 z-10 -mx-6 -mt-6 mb-2 flex h-14 items-center gap-4 border-b border-border bg-background/80 px-6 backdrop-blur-md">
       <div className="min-w-0">
-        <h1 className="truncate text-lg font-semibold leading-tight">{title}</h1>
+        <h1 className="truncate font-serif text-2xl font-medium leading-tight tracking-tight">{title}</h1>
         {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-3">
         {action}
+        <ThemeToggle />
         <NotificationBell />
         <RunningIndicator />
       </div>
