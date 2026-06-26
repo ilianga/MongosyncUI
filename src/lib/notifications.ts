@@ -1,5 +1,7 @@
 import { getSetting, insertEvent, type EventRow } from "./db";
 
+// Re-exported below: `recordStateChange` writes audit rows straight to the feed (no webhook).
+
 /**
  * Notification subsystem. All notification-specific types live here (NOT in types.ts) per
  * project convention. Two delivery paths:
@@ -18,15 +20,24 @@ export const EVENT_KINDS = {
   COMMITTED: "COMMITTED",
   /** A migration's supervision status became `crash_looping` — it needs attention. */
   CRASH_LOOPING: "CRASH_LOOPING",
-  /** Optional: lag jumped above a threshold. Reserved for future use. */
+  /** Lag rose above the configured threshold (edge-triggered). */
   LAG_SPIKE: "LAG_SPIKE",
   /** Optional: the source oplog window is running low. Reserved for future use. */
   LOW_OPLOG: "LOW_OPLOG",
+  /**
+   * A migration changed mongosync state (e.g. RUNNING → COMMITTING). Audit-only: recorded
+   * straight to the in-app feed for the Timeline, NOT routed through the webhook (kept out of
+   * ALL_EVENT_KINDS so it never carries a webhook toggle and notify() skips it).
+   */
+  STATE_CHANGE: "STATE_CHANGE",
 } as const;
 
 export type EventKind = (typeof EVENT_KINDS)[keyof typeof EVENT_KINDS];
 
-/** All known event kinds, in a stable order — used by the settings UI checkboxes. */
+/**
+ * Webhook-eligible event kinds, in a stable order — used by the settings UI checkboxes and as
+ * the default-enabled set. STATE_CHANGE is intentionally excluded (audit-only, see above).
+ */
 export const ALL_EVENT_KINDS: EventKind[] = [
   EVENT_KINDS.REACHED_CAN_COMMIT,
   EVENT_KINDS.COMMITTED,
@@ -42,6 +53,7 @@ export const EVENT_LABELS: Record<EventKind, string> = {
   CRASH_LOOPING: "Crash looping",
   LAG_SPIKE: "Lag spike",
   LOW_OPLOG: "Low oplog window",
+  STATE_CHANGE: "State change",
 };
 
 /** A notification event before it has been persisted (no id / timestamps yet). */
@@ -83,6 +95,14 @@ export interface NotifiableSnapshot {
   canCommit: boolean;
   /** Current supervision status (e.g. "running", "crash_looping"). */
   supervisionStatus: string;
+  /** Current change-event-application lag in seconds, when known. */
+  lagTimeSeconds?: number | null;
+}
+
+/** Options for the pure transition detector. */
+export interface DetectOpts {
+  /** Lag threshold (seconds) for LAG_SPIKE; <= 0 disables the check. */
+  lagThresholdSec?: number;
 }
 
 /**
@@ -94,7 +114,8 @@ export interface NotifiableSnapshot {
  */
 export function detectEvents(
   prev: NotifiableSnapshot | null,
-  cur: NotifiableSnapshot
+  cur: NotifiableSnapshot,
+  opts: DetectOpts = {}
 ): EventKind[] {
   const fired: EventKind[] = [];
 
@@ -113,7 +134,27 @@ export function detectEvents(
     fired.push(EVENT_KINDS.CRASH_LOOPING);
   }
 
+  // lag crosses the configured threshold (below-or-unknown → above). Disabled when the
+  // threshold is <= 0 so a fresh install never alerts on the large lag of an initial copy.
+  const thr = opts.lagThresholdSec ?? 0;
+  if (thr > 0 && cur.lagTimeSeconds != null && cur.lagTimeSeconds > thr) {
+    const prevAbove = (prev?.lagTimeSeconds ?? 0) > thr;
+    if (!prevAbove) fired.push(EVENT_KINDS.LAG_SPIKE);
+  }
+
   return fired;
+}
+
+/**
+ * Record a mongosync state transition to the in-app feed (audit-only, no webhook). Drives the
+ * migration Timeline. Best-effort: never throws.
+ */
+export function recordStateChange(migrationId: string, from: string, to: string): void {
+  try {
+    insertEvent({ migrationId, kind: EVENT_KINDS.STATE_CHANGE, message: `${from} → ${to}` });
+  } catch {
+    /* best-effort — timeline audit must never break the poll loop */
+  }
 }
 
 // ── Settings helpers ──────────────────────────────────────────────────────────
@@ -146,6 +187,17 @@ export function enabledEventKinds(): Set<EventKind> {
 /** Is this event kind enabled for notification? */
 export function isEventKindEnabled(kind: EventKind): boolean {
   return enabledEventKinds().has(kind);
+}
+
+/**
+ * Lag threshold (seconds) for the LAG_SPIKE alert, from settings. 0 (the default) disables
+ * the alert — a deliberately conservative default so the large lag of an initial copy never
+ * fires it. The user opts in by setting a positive value in Settings.
+ */
+export function lagThresholdSec(): number {
+  const raw = getSetting("notifyLagThresholdSec");
+  const n = raw === undefined ? 0 : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 // ── Webhook delivery ──────────────────────────────────────────────────────────

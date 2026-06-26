@@ -365,6 +365,16 @@ export function getEvents(limit = 50): EventRow[] {
     .all(limit) as EventRow[];
 }
 
+/**
+ * All events for one migration in chronological (ascending) order — the source for the
+ * migration Timeline / run report. Includes lifecycle alerts AND state-change audit rows.
+ */
+export function getEventsForMigration(migrationId: string, limit = 200): EventRow[] {
+  return getDb()
+    .prepare("SELECT * FROM events WHERE migrationId = ? ORDER BY createdAt ASC LIMIT ?")
+    .all(migrationId, limit) as EventRow[];
+}
+
 /** Count of unread (readAt IS NULL) events. */
 export function getUnreadEventCount(): number {
   const row = getDb()

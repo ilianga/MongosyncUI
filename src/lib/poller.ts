@@ -2,6 +2,8 @@ import { getAllMigrations, getInstances, updateMigration, insertMetric, hasRecen
 import {
   detectEvents,
   notify,
+  recordStateChange,
+  lagThresholdSec,
   type NotifiableSnapshot,
   type EventKind,
 } from "./notifications";
@@ -50,7 +52,7 @@ function maybeNotify(
   try {
     const prev = lastSnapshot.get(migrationId) ?? null;
     lastSnapshot.set(migrationId, cur);
-    const fired = detectEvents(prev, cur);
+    const fired = detectEvents(prev, cur, { lagThresholdSec: lagThresholdSec() });
     if (fired.length === 0) return;
     const since = Date.now() - DEDUP_WINDOW_MS;
     for (const kind of fired as EventKind[]) {
@@ -119,17 +121,22 @@ async function probe(m: Migration, hungTicks: number): Promise<void> {
       return;
     }
 
-    if (liveState && liveState !== m.state) updateMigration(m.id, { state: liveState });
+    if (liveState && liveState !== m.state) {
+      // Audit the transition to the in-app feed (drives the Timeline) before persisting it.
+      recordStateChange(m.id, m.state, liveState);
+      updateMigration(m.id, { state: liveState });
+    }
     // Best-effort OS-level resource metrics; null result leaves the fields unset.
     const stats = await getProcessStats(m);
     insertMetric({ ...progressToMetric(m.id, resp, m.plannedTotalBytes), ...(stats ?? {}) });
 
     // Notifiable lifecycle transitions. supervisionStatus from the DB row (set by reconcile /
-    // the wrapper); state + canCommit from the live progress.
+    // the wrapper); state + canCommit + lag from the live progress.
     maybeNotify(m.id, m.name, {
       state: liveState ?? m.state,
       canCommit: resp.progress?.canCommit === true,
       supervisionStatus: m.supervisionStatus,
+      lagTimeSeconds: resp.progress?.lagTimeSeconds ?? null,
     });
   } catch {
     if (!m.desiredRunning) return; // not supervised → nothing to rescue
@@ -200,7 +207,10 @@ async function probeSharded(m: Migration, hungTicks: number): Promise<void> {
 
   // Aggregate the per-instance progress into a single migration-level metric.
   const agg = aggregateInstanceProgress(results, m.plannedTotalBytes);
-  if (agg.state !== m.state) updateMigration(m.id, { state: agg.state });
+  if (agg.state !== m.state) {
+    recordStateChange(m.id, m.state, agg.state);
+    updateMigration(m.id, { state: agg.state });
+  }
 
   // Sum OS-level resource stats across all instances (each instance is a separate process).
   const stats = await aggregateInstanceStats(m);
@@ -231,6 +241,7 @@ async function probeSharded(m: Migration, hungTicks: number): Promise<void> {
       state: agg.state,
       canCommit: agg.canCommit === true,
       supervisionStatus: m.supervisionStatus,
+      lagTimeSeconds: agg.lagTimeSeconds,
     });
   }
 }

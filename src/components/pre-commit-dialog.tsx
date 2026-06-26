@@ -6,8 +6,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { ProgressResponse } from "@/lib/process-manager";
+import type { SourceWriteCheck } from "@/lib/source-writes";
+import { usePolling } from "@/hooks/use-polling";
 
 function Check({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -15,6 +17,29 @@ function Check({ ok, label }: { ok: boolean; label: string }) {
       {ok ? "✓" : "○"} {label}
     </li>
   );
+}
+
+// Three-state row for the source-writes safety gate (pass / fail / unknown).
+function WriteCheckRow({ check }: { check: SourceWriteCheck | null }) {
+  if (!check) {
+    return <li className="text-muted-foreground">○ Source writes stopped (checking…)</li>;
+  }
+  if (check.ok === false) {
+    return (
+      <li className="text-amber-600 dark:text-amber-400">
+        ! Source writes — unknown (couldn&apos;t read source oplog)
+      </li>
+    );
+  }
+  if (check.writesDetected === true) {
+    const ago = check.lastWriteAgoSec != null ? `, last ${Math.round(check.lastWriteAgoSec)}s ago` : "";
+    return (
+      <li className="text-destructive">
+        ✕ Source writes detected ({check.recentCount ?? "?"} in last {check.windowSec}s{ago})
+      </li>
+    );
+  }
+  return <li className="text-primary">✓ No source writes in last {check.windowSec}s</li>;
 }
 
 export function PreCommitDialog({
@@ -28,11 +53,27 @@ export function PreCommitDialog({
 }) {
   const [committing, setCommitting] = useState(false);
 
+  // Poll the source-writes safety probe only while the dialog is open.
+  const fetcher = useCallback(
+    async (signal: AbortSignal): Promise<SourceWriteCheck> => {
+      const res = await fetch(`/api/migrations/${migrationId}/source-writes`, { signal });
+      if (!res.ok) throw new Error(`source-writes ${res.status}`);
+      return (await res.json()) as SourceWriteCheck;
+    },
+    [migrationId],
+  );
+  const { data: writeCheck } = usePolling<SourceWriteCheck>(fetcher, {
+    intervalMs: 5000,
+    enabled: open,
+  });
+
   const p = progress?.progress;
   const stateOk = p?.state === "RUNNING";
   const canCommit = p?.canCommit === true;
   const lagOk = (p?.lagTimeSeconds ?? Infinity) <= 5;
-  const ready = stateOk && canCommit && lagOk;
+  // Block commit when writes are actively detected; allow when none or unknown.
+  const writesBlocking = writeCheck?.ok === true && writeCheck.writesDetected === true;
+  const ready = stateOk && canCommit && lagOk && !writesBlocking;
 
   const commit = async () => {
     setCommitting(true);
@@ -67,6 +108,7 @@ export function PreCommitDialog({
           <Check ok={stateOk} label="State is RUNNING" />
           <Check ok={canCommit} label="canCommit is true" />
           <Check ok={lagOk} label={`Lag is low (${p?.lagTimeSeconds ?? "—"}s)`} />
+          <WriteCheckRow check={writeCheck ?? null} />
         </ul>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

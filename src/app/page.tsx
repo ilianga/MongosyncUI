@@ -147,9 +147,19 @@ export default function DashboardPage() {
             title="No migrations yet"
             description="Create your first cluster-to-cluster migration to start syncing."
             action={
-              <Link href="/migrations/new">
-                <Button>+ New Migration</Button>
-              </Link>
+              <div className="flex flex-col items-center gap-2 sm:flex-row">
+                <Link href="/migrations/new">
+                  <Button>+ New Migration</Button>
+                </Link>
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    window.dispatchEvent(new Event("mongosyncui:open-onboarding"))
+                  }
+                >
+                  New here? Take the tour
+                </Button>
+              </div>
             }
           />
         ) : (

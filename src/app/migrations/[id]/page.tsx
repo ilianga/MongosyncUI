@@ -11,6 +11,9 @@ import { ProgressPanel } from "@/components/progress-panel";
 import { MigrationProgress } from "@/components/migration-progress";
 import { ShardBreakdown } from "@/components/shard-breakdown";
 import { VerificationPanel } from "@/components/verification-panel";
+import { CutoverCockpit } from "@/components/cutover-cockpit";
+import { ThroughputStats } from "@/components/throughput-stats";
+import { MigrationTimeline } from "@/components/migration-timeline";
 import { MetricsCharts } from "@/components/metrics-charts";
 import { LogsPanel } from "@/components/logs-panel";
 import { PreflightReportView } from "@/components/preflight-report";
@@ -257,7 +260,7 @@ export default function MigrationDetailPage() {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-0.5">
             <div className="flex items-center gap-2.5">
-              <h1 className="text-xl font-semibold truncate">{migration.name}</h1>
+              <h1 className="font-serif text-2xl font-medium tracking-tight truncate">{migration.name}</h1>
               {migration.stopped ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 font-mono text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" aria-hidden />
@@ -302,6 +305,17 @@ export default function MigrationDetailPage() {
             }}>Retry</Button>
           </div>
         )}
+        {!migration.sharded && (
+          <ErrorBoundary label="Cutover cockpit">
+            <CutoverCockpit
+              migrationId={migration.id}
+              state={migration.state}
+              progress={progress?.progress}
+              metrics={metrics}
+              onRequestCommit={() => setCommitOpen(true)}
+            />
+          </ErrorBoundary>
+        )}
         <ErrorBoundary label="Progress">
           <MigrationProgress
             metrics={metrics}
@@ -309,6 +323,11 @@ export default function MigrationDetailPage() {
             plannedTotalBytes={migration.plannedTotalBytes}
           />
         </ErrorBoundary>
+        {!migration.sharded && (
+          <ErrorBoundary label="Throughput">
+            <ThroughputStats metrics={metrics} />
+          </ErrorBoundary>
+        )}
         <ResourceStatsRow metric={metrics.length ? metrics[metrics.length - 1] : undefined} />
         <ErrorBoundary label="Per-shard instances">
           <ShardBreakdown migrationId={migration.id} sharded={!!migration.sharded} />
@@ -330,6 +349,12 @@ export default function MigrationDetailPage() {
             </ErrorBoundary>
           </>
         )}
+        <section className="space-y-3">
+          <SectionHeading>Timeline</SectionHeading>
+          <ErrorBoundary label="Timeline">
+            <MigrationTimeline migrationId={migration.id} />
+          </ErrorBoundary>
+        </section>
         <section className="space-y-3">
           <SectionHeading>Preflight</SectionHeading>
           <PreflightReportView

@@ -20,6 +20,8 @@ const KEYS = [
   "notifyWebhookEnabled",
   "notifyWebhookUrl",
   "notifyEvents",
+  // Lag-spike alert threshold in seconds; 0/unset disables it.
+  "notifyLagThresholdSec",
 ] as const;
 
 // Accept any object; unknown keys and non-string values are ignored on write (same

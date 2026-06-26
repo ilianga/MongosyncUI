@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Topbar } from "@/components/app-shell/topbar";
 import { ConnectionBuilder } from "@/components/connection-builder";
+import { ConnectionDoctor } from "@/components/connection-doctor";
+import { Stethoscope } from "lucide-react";
 import { connToConfig, configToConnForm, type MigrationFormValues } from "@/lib/schemas";
 import { CONNECTION_COLORS, DEFAULT_CONNECTION_COLOR, resolveConnectionColor } from "@/lib/colors";
 import { maskUri } from "@/lib/format";
@@ -65,6 +67,7 @@ export default function ConnectionsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SavedConnection | null>(null);
+  const [doctorTarget, setDoctorTarget] = useState<SavedConnection | null>(null);
   // Cert-staging token for the builder's TLS uploads (unused on save — connections don't
   // commit certs — but the builder requires it). Stable for the page's lifetime.
   const [token] = useState(() => nanoid());
@@ -190,6 +193,10 @@ export default function ConnectionsPage() {
                   <p className="truncate text-sm font-medium">{c.name}</p>
                   <p className="truncate font-mono text-xs text-muted-foreground">{summarize(c)}</p>
                 </div>
+                <Button variant="ghost" size="icon-sm" title="Run diagnostics"
+                  aria-label="Run diagnostics" onClick={() => setDoctorTarget(c)}>
+                  <Stethoscope />
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => openEdit(c)}>Edit</Button>
                 <Button variant="ghost" size="sm" className="text-destructive"
                   onClick={() => setDeleteTarget(c)}>Delete</Button>
@@ -252,6 +259,12 @@ export default function ConnectionsPage() {
           </Card>
         )}
       </div>
+
+      <ConnectionDoctor
+        key={doctorTarget?.id ?? "none"}
+        connection={doctorTarget}
+        onOpenChange={(v) => { if (!v) setDoctorTarget(null); }}
+      />
 
       <Dialog open={deleteTarget !== null} onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}>
         <DialogContent>

@@ -64,6 +64,38 @@ describe("detectEvents", () => {
   it("returns nothing when nothing notable changed", () => {
     expect(detectEvents(snap(), snap())).toEqual([]);
   });
+
+  it("fires LAG_SPIKE when lag rises above the threshold (edge-triggered)", () => {
+    expect(
+      detectEvents(snap({ lagTimeSeconds: 10 }), snap({ lagTimeSeconds: 120 }), {
+        lagThresholdSec: 60,
+      })
+    ).toEqual([EVENT_KINDS.LAG_SPIKE]);
+  });
+
+  it("does NOT refire LAG_SPIKE while lag stays above the threshold", () => {
+    expect(
+      detectEvents(snap({ lagTimeSeconds: 120 }), snap({ lagTimeSeconds: 130 }), {
+        lagThresholdSec: 60,
+      })
+    ).toEqual([]);
+  });
+
+  it("does NOT fire LAG_SPIKE when the threshold is 0/disabled", () => {
+    expect(
+      detectEvents(snap({ lagTimeSeconds: 1 }), snap({ lagTimeSeconds: 9999 }), {
+        lagThresholdSec: 0,
+      })
+    ).toEqual([]);
+  });
+
+  it("does NOT fire LAG_SPIKE when lag is unknown (null)", () => {
+    expect(
+      detectEvents(snap({ lagTimeSeconds: null }), snap({ lagTimeSeconds: null }), {
+        lagThresholdSec: 60,
+      })
+    ).toEqual([]);
+  });
 });
 
 describe("composeMessage / buildWebhookPayload", () => {

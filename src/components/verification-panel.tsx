@@ -58,6 +58,54 @@ function Side({ title, side }: { title: string; side?: VerificationSide }) {
   );
 }
 
+// Treat a verifier side as terminal/"completed" once it advertises a completed-ish phase.
+function isSideComplete(side?: VerificationSide): boolean {
+  const phase = (side?.phase ?? "").toLowerCase();
+  return phase.includes("complete") || phase.includes("finished") || phase.includes("done");
+}
+
+// Headline trust line shown above the per-side detail: a loud green confirmation when both
+// sides have hashed everything and matched, a progress line while running, otherwise nothing.
+function VerificationHeadline({
+  source,
+  destination,
+}: {
+  source?: VerificationSide;
+  destination?: VerificationSide;
+}) {
+  const sides = [source, destination].filter((s): s is VerificationSide => !!s);
+  if (sides.length === 0) return null;
+
+  const totalHashed = sides.reduce((n, s) => n + (s.hashedDocumentCount ?? 0), 0);
+  const totalEstimated = sides.reduce((n, s) => n + (s.estimatedDocumentCount ?? 0), 0);
+  const scanned = sides.reduce((n, s) => n + (s.scannedCollectionCount ?? 0), 0);
+  const totalCols = sides.reduce((n, s) => n + (s.totalCollectionCount ?? 0), 0);
+
+  const allComplete = sides.every(isSideComplete);
+  const allHashed = sides.every(
+    (s) => (s.hashedDocumentCount ?? 0) >= (s.estimatedDocumentCount ?? 0) && (s.hashedDocumentCount ?? 0) > 0,
+  );
+
+  if (allComplete && allHashed) {
+    return (
+      <div className="rounded-md border border-primary/40 bg-primary/10 px-4 py-3">
+        <p className="text-sm font-semibold text-primary">
+          ✅ Data verified — {totalHashed.toLocaleString()} documents hashed and matched
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-border/60 px-4 py-3">
+      <p className="text-sm font-medium">
+        Verifying… {scanned} / {totalCols} collections, {totalHashed.toLocaleString()} /{" "}
+        {totalEstimated.toLocaleString()} documents hashed
+      </p>
+    </div>
+  );
+}
+
 export function VerificationPanel({
   verification,
 }: {
@@ -70,6 +118,7 @@ export function VerificationPanel({
       <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
         Embedded Verification
       </h3>
+      <VerificationHeadline source={verification.source} destination={verification.destination} />
       <div className="grid gap-4 md:grid-cols-2">
         <Side title="Source" side={verification.source} />
         <Side title="Destination" side={verification.destination} />

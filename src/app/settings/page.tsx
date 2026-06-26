@@ -28,6 +28,7 @@ interface Settings {
   notifyWebhookEnabled: string;
   notifyWebhookUrl: string;
   notifyEvents: string;
+  notifyLagThresholdSec: string;
 }
 
 const DEFAULTS: Settings = {
@@ -37,6 +38,7 @@ const DEFAULTS: Settings = {
   supervisionMode: "supervised", backoffCapSec: "60", crashLoopMax: "5",
   crashLoopWindowSec: "300", hungTicks: "6",
   notifyWebhookEnabled: "false", notifyWebhookUrl: "", notifyEvents: "",
+  notifyLagThresholdSec: "0",
 };
 
 // Notifiable event kinds, mirrored from src/lib/notifications.ts (kept in sync manually so
@@ -438,6 +440,17 @@ export default function SettingsPage() {
               </div>
               <p className="text-xs text-muted-foreground">
                 Applies to both the in-app feed and the webhook.
+              </p>
+            </div>
+            <div className="space-y-2 border-t border-border pt-4">
+              <Label htmlFor="notifyLagThresholdSec">Lag spike threshold (seconds)</Label>
+              <Input id="notifyLagThresholdSec" type="number" min={0} className="max-w-40"
+                value={s.notifyLagThresholdSec}
+                onChange={(e) => set("notifyLagThresholdSec")(e.target.value)} />
+              <p className="text-xs text-muted-foreground">
+                Raise a “Lag spike” event when change-event-application lag first rises above this
+                many seconds. <span className="font-mono">0</span> disables it (recommended until a
+                migration is past its initial copy, when lag is naturally high).
               </p>
             </div>
             <div className="flex items-center justify-between border-t border-border pt-4">

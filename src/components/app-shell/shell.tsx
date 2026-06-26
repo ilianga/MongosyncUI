@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
+import CommandPalette from "./command-palette";
+import FirstRunDialog from "@/components/first-run-dialog";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "mongosyncui:sidebar-collapsed";
@@ -65,6 +67,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <main className="flex-1 animate-fade-in px-6 py-6">{children}</main>
       </div>
+      {/* Global, headless chrome: ⌘K command palette + first-run onboarding. Both render
+          nothing until triggered (keyboard / first-visit / custom event). */}
+      <CommandPalette />
+      <FirstRunDialog />
     </div>
   );
 }
