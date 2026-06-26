@@ -578,8 +578,8 @@ export function MigrationForm() {
           </DialogDescription>
         </DialogHeader>
         {preview && (
-          <div className="space-y-4">
-            <div className="space-y-1.5">
+          <div className="min-w-0 space-y-4">
+            <div className="min-w-0 space-y-1.5">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold">mongosync config (YAML)</p>
                 <Button type="button" variant="outline" size="sm"
@@ -591,7 +591,7 @@ export function MigrationForm() {
                 {preview.yaml}
               </pre>
             </div>
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold">/start request body (JSON)</p>
                 <Button type="button" variant="outline" size="sm"
