@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Copy } from "lucide-react";
@@ -60,6 +60,9 @@ const EXAMPLE_CONNECTIONS: { label: string; value: string }[] = [
 export default function FirstRunDialog() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  // Direct the dialog's initial focus to the primary action so a step row isn't auto-focused
+  // (which gave step 1 a heavy green focus ring that read as "selected").
+  const getStartedRef = useRef<HTMLButtonElement>(null);
 
   // Open automatically on first run; (re)open on the custom event. localStorage is a
   // client-only external system, so this read has to happen after mount (a lazy initializer
@@ -120,7 +123,7 @@ export default function FirstRunDialog() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" initialFocus={getStartedRef}>
         <DialogHeader>
           <DialogTitle className="font-serif text-xl">Welcome to MongosyncUI</DialogTitle>
           <DialogDescription>
@@ -129,23 +132,30 @@ export default function FirstRunDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <ol className="flex flex-col gap-2">
+        {/* Atlas-style get-started checklist: a single divided list, not heavy cards. */}
+        <ol className="divide-y divide-border overflow-hidden rounded-lg border border-border">
           {STEPS.map((step) => (
             <li key={step.n}>
               <button
                 type="button"
                 onClick={() => go(step.href)}
                 className={cn(
-                  "group flex w-full items-start gap-3 rounded-lg border border-border bg-card p-3 text-left transition-colors",
-                  "hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  "group flex w-full items-center gap-3 bg-card p-3 text-left transition-colors",
+                  "hover:bg-accent focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
                 )}
               >
                 <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                   {step.n}
                 </span>
-                <span className="flex flex-col">
+                <span className="flex min-w-0 flex-1 flex-col">
                   <span className="text-sm font-medium text-foreground">{step.title}</span>
                   <span className="text-xs text-muted-foreground">{step.subtext}</span>
+                </span>
+                <span
+                  aria-hidden
+                  className="text-muted-foreground transition-transform group-hover:translate-x-0.5"
+                >
+                  →
                 </span>
               </button>
             </li>
@@ -183,7 +193,9 @@ export default function FirstRunDialog() {
         </div>
 
         <DialogFooter>
-          <Button onClick={() => handleOpenChange(false)}>Get started</Button>
+          <Button ref={getStartedRef} onClick={() => handleOpenChange(false)}>
+            Get started
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

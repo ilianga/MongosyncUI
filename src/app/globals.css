@@ -66,8 +66,10 @@
   --accent: #E3FCF7;
   --accent-foreground: #00684A;
   --destructive: #DB3030;
-  --border: #E8EDEB;
-  --input: #E8EDEB;
+  /* Atlas-style dividers: a clearly visible gray line (LeafyGreen gray-light-2 reads too
+     faint on white once components dilute it). Inputs get a slightly stronger edge. */
+  --border: #D2DAD7;
+  --input: #C1C7C6;
   --ring: #00684A;
   --chart-1: #00684A;
   --chart-2: #016BF8;
@@ -79,9 +81,10 @@
   --sidebar-foreground: #3D4F58;
   --sidebar-primary: #00684A;
   --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #F9FBFA;
+  /* Active nav item = Atlas mint (was a near-invisible pale gray). */
+  --sidebar-accent: #E3FCF7;
   --sidebar-accent-foreground: #00684A;
-  --sidebar-border: #E8EDEB;
+  --sidebar-border: #D2DAD7;
   --sidebar-ring: #00684A;
 }
 
