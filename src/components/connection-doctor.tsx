@@ -164,7 +164,7 @@ export function ConnectionDoctor({ connection, onOpenChange }: ConnectionDoctorP
 
           {!loading && error && (
             <div className="space-y-2 py-4">
-              <p className="text-sm text-destructive">{error}</p>
+              <p className="text-sm break-words text-destructive">{error}</p>
               {connection && (
                 <Button variant="outline" size="sm" onClick={() => void run(connection.conn, role)}>
                   Retry
@@ -179,10 +179,10 @@ export function ConnectionDoctor({ connection, onOpenChange }: ConnectionDoctorP
               <div key={check.id} className="flex gap-2.5 rounded-md border border-border p-2.5">
                 <Icon className={cn("mt-0.5 size-4 shrink-0", className)} aria-hidden />
                 <div className="min-w-0 flex-1 space-y-0.5">
-                  <p className="text-sm font-medium">{check.label}</p>
-                  <p className="text-xs text-muted-foreground">{check.detail}</p>
+                  <p className="text-sm font-medium break-words">{check.label}</p>
+                  <p className="text-xs break-words text-muted-foreground">{check.detail}</p>
                   {check.remediation && (
-                    <p className="text-xs text-muted-foreground/80 italic">{check.remediation}</p>
+                    <p className="text-xs break-words text-muted-foreground/80 italic">{check.remediation}</p>
                   )}
                 </div>
               </div>
