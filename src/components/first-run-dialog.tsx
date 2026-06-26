@@ -162,18 +162,18 @@ export default function FirstRunDialog() {
           ))}
         </ol>
 
-        <div className="rounded-lg border border-border bg-muted/40 p-3">
+        <div className="min-w-0 rounded-lg border border-border bg-muted/40 p-3">
           <p className="text-xs font-medium text-foreground">Testing locally?</p>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Optional — example throwaway connection strings to try things out.
           </p>
-          <div className="mt-2 flex flex-col gap-2">
+          <div className="mt-2 flex min-w-0 flex-col gap-2">
             {EXAMPLE_CONNECTIONS.map((ex) => (
-              <div key={ex.label} className="flex flex-col gap-1">
+              <div key={ex.label} className="flex min-w-0 flex-col gap-1">
                 <span className="text-[0.65rem] uppercase tracking-wide text-muted-foreground">
                   {ex.label}
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <code className="min-w-0 flex-1 truncate rounded bg-background px-2 py-1 font-mono text-[0.7rem] text-foreground ring-1 ring-border">
                     {ex.value}
                   </code>

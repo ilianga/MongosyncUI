@@ -109,9 +109,13 @@ export function usePolling<T>(
     };
 
     // Initial fetch (deferred to a microtask so it is not a synchronous setState
-    // inside the effect body).
+    // inside the effect body). NOTE: this calls runFetch() directly rather than tick(),
+    // so the FIRST load always happens even when the tab is hidden. Routing it through
+    // tick() would skip it under pauseWhenHidden, leaving `loading` stuck true (a perpetual
+    // skeleton) until the tab gains focus — e.g. when the app is opened in a background tab.
+    // Only the recurring interval below respects pauseWhenHidden.
     void Promise.resolve().then(() => {
-      if (mountedRef.current) tick();
+      if (mountedRef.current) void runFetch();
     });
 
     if (intervalMs > 0) {
